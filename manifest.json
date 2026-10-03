@@ -1,0 +1,9 @@
+{
+  "id": "echo-read",
+  "name": "Echo Read",
+  "version": "0.1.0",
+  "minAppVersion": "1.8.0",
+  "description": "Read English articles in Obsidian and practice pronunciation with read-aloud and dictation.",
+  "author": "GanQi",
+  "isDesktopOnly": false
+}
