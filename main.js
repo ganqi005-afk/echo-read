@@ -776,6 +776,42 @@ function messageOf(error) {
 // src/reader/controller.ts
 var import_obsidian4 = require("obsidian");
 
+// src/audio/playback.ts
+var current = null;
+async function playAudioBytes(bytes, mimeType) {
+  const url = URL.createObjectURL(new Blob([bytes], { type: mimeType }));
+  const audio = new Audio(url);
+  current = audio;
+  try {
+    await new Promise((resolve, reject) => {
+      const cleanup = () => {
+        URL.revokeObjectURL(url);
+        if (current === audio) current = null;
+      };
+      audio.addEventListener("ended", () => {
+        cleanup();
+        resolve();
+      });
+      audio.addEventListener("error", () => {
+        cleanup();
+        reject(new Error("音频播放失败。"));
+      });
+      audio.play().catch((error) => {
+        cleanup();
+        reject(error);
+      });
+    });
+  } catch (error) {
+    if (current === audio) current = null;
+    throw error;
+  }
+}
+function stopPlayback() {
+  if (!current) return;
+  current.pause();
+  current = null;
+}
+
 // src/speech/tts-system.ts
 function loadVoices(timeoutMs = 2e3) {
   return new Promise((resolve) => {
@@ -816,19 +852,6 @@ function speak(text, options = {}) {
 }
 function stopSpeaking() {
   if (typeof speechSynthesis !== "undefined") speechSynthesis.cancel();
-}
-
-// src/audio/playback.ts
-async function playAudioBytes(bytes, mimeType) {
-  const url = URL.createObjectURL(new Blob([bytes], { type: mimeType }));
-  const audio = new Audio(url);
-  audio.addEventListener("ended", () => URL.revokeObjectURL(url));
-  try {
-    await audio.play();
-  } catch (error) {
-    URL.revokeObjectURL(url);
-    throw error;
-  }
 }
 
 // src/speech/tts-client.ts
@@ -1140,25 +1163,25 @@ function assignOwners(nodes, ranges) {
     const length = node.nodeValue?.length ?? 0;
     const nodeEnd = offset + length;
     let cursor = offset;
-    let current = node;
+    let current2 = node;
     while (cursor < nodeEnd) {
       const index = ranges.findIndex((range) => cursor >= range.start && cursor < range.end);
       if (index < 0) {
         const next = ranges.find((range) => range.start > cursor);
         const stop = Math.min(next ? next.start : nodeEnd, nodeEnd);
         if (stop <= cursor) break;
-        current = current.splitText(stop - cursor);
+        current2 = current2.splitText(stop - cursor);
         cursor = stop;
         continue;
       }
       const boundary = ranges[index].end;
       if (boundary >= nodeEnd) {
-        owners.push({ node: current, index });
+        owners.push({ node: current2, index });
         break;
       }
-      const rest = current.splitText(boundary - cursor);
-      owners.push({ node: current, index });
-      current = rest;
+      const rest = current2.splitText(boundary - cursor);
+      owners.push({ node: current2, index });
+      current2 = rest;
       cursor = boundary;
     }
     offset = nodeEnd;
@@ -1182,13 +1205,15 @@ var ReadingController = class {
   }
   app;
   plugin;
+  currentGroup = [];
   currentText = "";
-  currentSpans = [];
   bar = null;
   statusEl = null;
   resultEl = null;
   shadowButton = null;
+  continuousButton = null;
   recorder;
+  continuous = false;
   register() {
     this.plugin.registerMarkdownPostProcessor((element) => {
       element.querySelectorAll("p").forEach((paragraph) => decorateParagraph(paragraph));
@@ -1208,29 +1233,37 @@ var ReadingController = class {
     }
     const index = Number(span.getAttribute(SENTENCE_ATTR));
     if (!Number.isFinite(index)) return;
+    this.stopContinuous();
+    this.cancelRecording();
     this.selectSentence(index, span);
+    if (this.plugin.settings.speakOnClick) void this.speak();
   }
   selectSentence(index, span) {
-    this.cancelRecording();
-    this.clearHighlight();
     const scope = span.closest(`[${PARAGRAPH_ATTR}]`) ?? document;
-    const spans = Array.from(
+    const group = Array.from(
       scope.querySelectorAll(`[${SENTENCE_ATTR}="${index}"]`)
     );
-    for (const element of spans) element.classList.add(CURRENT_CLASS);
-    this.currentSpans = spans;
-    this.currentText = spans.map((element) => element.textContent ?? "").join("");
+    if (group.length === 0) return;
+    this.highlightGroup(group);
     this.showBar();
   }
+  highlightGroup(group) {
+    this.clearHighlight();
+    for (const element of group) element.classList.add(CURRENT_CLASS);
+    this.currentGroup = group;
+    this.currentText = group.map((element) => element.textContent ?? "").join("");
+  }
   clearHighlight() {
-    for (const element of this.currentSpans) element.classList.remove(CURRENT_CLASS);
-    this.currentSpans = [];
+    for (const element of this.currentGroup) element.classList.remove(CURRENT_CLASS);
+    this.currentGroup = [];
   }
   clearSelection() {
+    this.stopContinuous();
     this.cancelRecording();
     this.clearHighlight();
     this.currentText = "";
     stopSpeaking();
+    stopPlayback();
     if (this.bar) this.bar.style.display = "none";
   }
   showBar() {
@@ -1242,19 +1275,23 @@ var ReadingController = class {
   ensureBar() {
     if (this.bar) return this.bar;
     const bar = document.body.createDiv({ cls: "echo-read-bar" });
-    bar.createEl("button", { text: "朗读" }).addEventListener("click", () => void this.speak());
     this.shadowButton = bar.createEl("button", { text: "跟读打分" });
     this.shadowButton.addEventListener("click", () => void this.toggleShadowing());
+    this.continuousButton = bar.createEl("button", { text: "连续朗读" });
+    this.continuousButton.addEventListener("click", () => void this.toggleContinuous());
     bar.createEl("button", { text: "停止" }).addEventListener("click", () => {
-      stopSpeaking();
+      this.stopContinuous();
       this.cancelRecording();
+      stopSpeaking();
+      stopPlayback();
+      this.setStatus("已停止");
     });
-    bar.createEl("button", { text: "关闭" }).addEventListener("click", () => this.clearSelection());
     this.statusEl = bar.createDiv({ cls: "echo-read-bar-status" });
     this.resultEl = bar.createDiv({ cls: "echo-read-bar-result" });
     this.bar = bar;
     return bar;
   }
+  // ---------------- 朗读 ----------------
   async speak() {
     if (!this.currentText.trim()) return;
     this.setResult("");
@@ -1268,19 +1305,66 @@ var ReadingController = class {
       this.reportFailure("朗读", error);
     }
   }
-  /** 跟读：第一次点开始录音，第二次点结束并打分。 */
+  // ---------------- 连续朗读 ----------------
+  async toggleContinuous() {
+    if (this.continuous) {
+      this.stopContinuous();
+      return;
+    }
+    if (this.currentGroup.length === 0) return;
+    this.continuous = true;
+    this.updateContinuousButton();
+    this.setResult("");
+    const groups = collectSentenceGroups(document);
+    const anchor = this.currentGroup[0];
+    let start = groups.findIndex((group) => group.includes(anchor));
+    if (start < 0) start = 0;
+    const total = groups.length - start;
+    try {
+      for (let i = start; i < groups.length; i++) {
+        if (!this.continuous) break;
+        const group = groups[i];
+        this.highlightGroup(group);
+        group[0].scrollIntoView({ block: "center", behavior: "smooth" });
+        this.setStatus(`连续朗读 ${i - start + 1} / ${total}`);
+        await speakSentence(this.app, this.plugin, this.textOf(group));
+      }
+      if (this.continuous) this.setStatus("连续朗读结束");
+    } catch (error) {
+      this.reportFailure("连续朗读", error);
+    } finally {
+      this.continuous = false;
+      this.updateContinuousButton();
+    }
+  }
+  stopContinuous() {
+    if (!this.continuous) return;
+    this.continuous = false;
+    stopSpeaking();
+    stopPlayback();
+    this.updateContinuousButton();
+  }
+  updateContinuousButton() {
+    this.continuousButton?.setText(this.continuous ? "停止连读" : "连续朗读");
+  }
+  textOf(group) {
+    return group.map((element) => element.textContent ?? "").join("");
+  }
+  // ---------------- 跟读打分 ----------------
+  /** 第一次点开始录音，第二次点结束并评分。 */
   async toggleShadowing() {
     if (this.recorder) {
       await this.finishShadowing();
       return;
     }
     if (!this.currentText.trim()) return;
+    this.stopContinuous();
     try {
       this.recorder = new Recorder();
       await this.recorder.start();
       this.setResult("");
       this.setStatus("● 录音中… 读完后再点一次「跟读打分」");
-      if (this.shadowButton) this.shadowButton.setText("结束并评分");
+      this.shadowButton?.setText("结束并评分");
     } catch (error) {
       this.recorder = void 0;
       this.reportFailure("录音", error);
@@ -1290,7 +1374,7 @@ var ReadingController = class {
     const recorder = this.recorder;
     if (!recorder) return;
     this.recorder = void 0;
-    if (this.shadowButton) this.shadowButton.setText("跟读打分");
+    this.shadowButton?.setText("跟读打分");
     this.setStatus("识别中…");
     try {
       const recording = await recorder.stop();
@@ -1329,9 +1413,10 @@ var ReadingController = class {
     if (!this.recorder) return;
     const recorder = this.recorder;
     this.recorder = void 0;
-    if (this.shadowButton) this.shadowButton.setText("跟读打分");
+    this.shadowButton?.setText("跟读打分");
     void recorder.stop().catch(() => void 0);
   }
+  // ---------------- 杂项 ----------------
   reportFailure(action, error) {
     const message = error instanceof Error ? error.message : String(error);
     this.setStatus(`${action}失败`);
@@ -1345,14 +1430,36 @@ var ReadingController = class {
     this.resultEl?.setText(text);
   }
   dispose() {
+    this.stopContinuous();
     this.cancelRecording();
     this.bar?.remove();
     this.bar = null;
     this.statusEl = null;
     this.resultEl = null;
     this.shadowButton = null;
+    this.continuousButton = null;
   }
 };
+function collectSentenceGroups(root) {
+  const spans = Array.from(root.querySelectorAll(`[${SENTENCE_ATTR}]`));
+  const groups = [];
+  let bucket = [];
+  let lastParagraph = null;
+  let lastIndex = -1;
+  for (const span of spans) {
+    const paragraph = span.closest(`[${PARAGRAPH_ATTR}]`);
+    const index = Number(span.getAttribute(SENTENCE_ATTR));
+    if (paragraph !== lastParagraph || index !== lastIndex) {
+      if (bucket.length > 0) groups.push(bucket);
+      bucket = [];
+      lastParagraph = paragraph;
+      lastIndex = index;
+    }
+    bucket.push(span);
+  }
+  if (bucket.length > 0) groups.push(bucket);
+  return groups;
+}
 
 // src/settings/tab.ts
 var import_obsidian6 = require("obsidian");
@@ -1595,7 +1702,8 @@ var DEFAULT_SETTINGS = {
   llmBaseUrl: TEXT_PRESETS[0].baseUrl,
   llmModel: "qwen3.8-flash",
   voiceURI: "",
-  speechRate: 1
+  speechRate: 1,
+  speakOnClick: true
 };
 function mergeSettings(stored) {
   const merged = { ...DEFAULT_SETTINGS, ...stored ?? {} };
@@ -1854,7 +1962,14 @@ var EchoReadSettingTab = class extends import_obsidian6.PluginSettingTab {
   // ---------------- 朗读 ----------------
   renderReading() {
     const { containerEl } = this;
-    containerEl.createEl("h3", { text: "系统语音" });
+    containerEl.createEl("h3", { text: "朗读与交互" });
+    new import_obsidian6.Setting(containerEl).setName("点句即朗读").setDesc(
+      "点任意一句就直接读出来，省掉「先选中再点按钮」那一步。关掉后点句只选中、不发声。"
+    ).addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.speakOnClick).onChange(async (value) => {
+        await this.plugin.updateSettings({ speakOnClick: value });
+      })
+    );
     new import_obsidian6.Setting(containerEl).setName("语速").addSlider(
       (slider) => slider.setLimits(0.5, 1.5, 0.05).setValue(this.plugin.settings.speechRate).setDynamicTooltip().onChange(async (value) => {
         await this.plugin.updateSettings({ speechRate: value });
@@ -1972,7 +2087,7 @@ ${ids.join("\n")}`;
   }
   async runWithDiagnostics(button, idleLabel, busyLabel, context, action) {
     this.diagnosticLines = [];
-    this.appendDiagnostic(`构建时间：${"2026-10-04T06:22:12.774Z"}`);
+    this.appendDiagnostic(`构建时间：${"2026-10-04T06:27:15.968Z"}`);
     this.appendDiagnostic(`时间：${(/* @__PURE__ */ new Date()).toLocaleString()}`);
     for (const line of context) this.appendDiagnostic(line);
     try {

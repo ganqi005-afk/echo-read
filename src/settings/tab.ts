@@ -358,7 +358,19 @@ export class EchoReadSettingTab extends PluginSettingTab {
 
   private renderReading(): void {
     const { containerEl } = this;
-    containerEl.createEl("h3", { text: "系统语音" });
+    containerEl.createEl("h3", { text: "朗读与交互" });
+
+    new Setting(containerEl)
+      .setName("点句即朗读")
+      .setDesc(
+        "点任意一句就直接读出来，省掉「先选中再点按钮」那一步。" +
+          "关掉后点句只选中、不发声。",
+      )
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.speakOnClick).onChange(async (value) => {
+          await this.plugin.updateSettings({ speakOnClick: value });
+        }),
+      );
 
     new Setting(containerEl)
       .setName("语速")
