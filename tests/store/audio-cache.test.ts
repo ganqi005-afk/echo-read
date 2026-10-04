@@ -2,9 +2,13 @@ import { describe, expect, it } from "vitest";
 import {
   buildCacheKey,
   formatBytes,
+  pruneIndexEntries,
+  recentIndexEntries,
   selectForRemoval,
   summarizeCache,
   toHex,
+  upsertIndexEntry,
+  type AudioIndex,
   type CacheEntry,
 } from "../../src/store/audio-cache";
 
@@ -116,5 +120,51 @@ describe("formatBytes", () => {
     expect(formatBytes(512)).toBe("512 B");
     expect(formatBytes(2048)).toBe("2.0 KB");
     expect(formatBytes(5 * 1024 * 1024)).toBe("5.0 MB");
+  });
+});
+
+describe("audio index", () => {
+  const entry = (text: string, file: string, createdAt: number) => ({
+    text,
+    voice: "v",
+    model: "m",
+    format: "mp3",
+    file,
+    createdAt,
+  });
+
+  it("adds and replaces entries by hash", () => {
+    const first = upsertIndexEntry({}, "h1", entry("one", "a.mp3", 1));
+    const second = upsertIndexEntry(first, "h1", entry("one updated", "a.mp3", 2));
+    expect(Object.keys(second)).toEqual(["h1"]);
+    expect(second.h1.text).toBe("one updated");
+  });
+
+  it("returns the most recent entries first", () => {
+    const index: AudioIndex = {
+      a: entry("old", "a.mp3", 1),
+      b: entry("new", "b.mp3", 3),
+      c: entry("middle", "c.mp3", 2),
+    };
+    expect(recentIndexEntries(index, 2).map((item) => item.text)).toEqual(["new", "middle"]);
+  });
+
+  it("handles a zero limit without throwing", () => {
+    expect(recentIndexEntries({ a: entry("x", "a.mp3", 1) }, 0)).toEqual([]);
+  });
+
+  // 文件被淘汰后索引必须同步清理，否则会指向不存在的音频
+  it("drops entries whose files were removed", () => {
+    const index: AudioIndex = {
+      keep: entry("keep", "keep.mp3", 1),
+      drop: entry("drop", "drop.mp3", 2),
+    };
+    const pruned = pruneIndexEntries(index, ["drop.mp3"]);
+    expect(Object.keys(pruned)).toEqual(["keep"]);
+  });
+
+  it("keeps everything when nothing was removed", () => {
+    const index: AudioIndex = { a: entry("a", "a.mp3", 1) };
+    expect(Object.keys(pruneIndexEntries(index, []))).toEqual(["a"]);
   });
 });

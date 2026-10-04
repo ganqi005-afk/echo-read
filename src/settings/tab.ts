@@ -20,7 +20,9 @@ import {
   formatBytes,
   listAudioCache,
   pruneAudioCache,
+  readAudioIndex,
   readCachedAudio,
+  recentIndexEntries,
   summarizeCache,
   writeCachedAudio,
 } from "../store/audio-cache";
@@ -400,6 +402,7 @@ export class EchoReadSettingTab extends PluginSettingTab {
 
     const stats = new Setting(containerEl).setName("当前占用").setDesc("统计中…");
     void this.refreshCacheStats(stats);
+    void this.renderCachedSamples(containerEl);
 
     new Setting(containerEl)
       .setName("自动清理天数")
@@ -460,6 +463,28 @@ export class EchoReadSettingTab extends PluginSettingTab {
         ? "还没有缓存。朗读过的句子会自动存到这里。"
         : `已缓存 ${stats.count} 句，占用 ${formatBytes(stats.bytes)}。这些句子重读不再计费。`,
     );
+  }
+
+  /**
+   * 把缓存里的句子原文列出来。文件名是内容哈希，人看不懂 ——
+   * 没有这一步，缓存就只是个数字，你无法核对到底存了什么。
+   */
+  private async renderCachedSamples(containerEl: HTMLElement): Promise<void> {
+    const recent = recentIndexEntries(await readAudioIndex(this.app), 10);
+    if (recent.length === 0) return;
+
+    containerEl.createEl("p", {
+      cls: "setting-item-description",
+      text: "最近缓存的句子（重读不再计费）：",
+    });
+
+    const list = containerEl.createEl("ul");
+    for (const entry of recent) {
+      const preview = entry.text.length > 60 ? `${entry.text.slice(0, 60)}…` : entry.text;
+      const item = list.createEl("li", { text: `${preview}　—　${entry.voice} · ${entry.model}` });
+      item.style.fontSize = "var(--font-ui-smaller)";
+      item.style.color = "var(--text-muted)";
+    }
   }
 
   private renderDiagnostics(): void {

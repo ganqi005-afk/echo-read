@@ -153,7 +153,10 @@ export async function removeCacheEntries(app: App, entries: CacheEntry[]): Promi
 }
 
 export async function clearAudioCache(app: App): Promise<number> {
-  return removeCacheEntries(app, await listAudioCache(app));
+  const entries = await listAudioCache(app);
+  const removed = await removeCacheEntries(app, entries);
+  await writeAudioIndex(app, {});
+  return removed;
 }
 
 export async function pruneAudioCache(
@@ -162,11 +165,105 @@ export async function pruneAudioCache(
 ): Promise<number> {
   const entries = await listAudioCache(app);
   const doomed = selectForRemoval(entries, { ...options, now: Date.now() });
-  return removeCacheEntries(app, doomed);
+  const removed = await removeCacheEntries(app, doomed);
+
+  // 索引必须同步清理，否则会留下指向不存在音频的条目
+  if (doomed.length > 0) {
+    const index = await readAudioIndex(app);
+    await writeAudioIndex(app, pruneIndexEntries(index, doomed.map((entry) => entry.path)));
+  }
+
+  return removed;
 }
 
 export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+// ---------------- 音频索引 ----------------
+
+export const AUDIO_INDEX_PATH = "_lingo/audio/index.json";
+
+/**
+ * 一条索引记录。文件名是内容哈希，人看不懂 ——
+ * 所以额外记下原文，让缓存变成"可核对"的东西：
+ * 你能看到到底缓存了哪些句子，而不是只有一个数字。
+ */
+export interface AudioIndexEntry {
+  text: string;
+  voice: string;
+  model: string;
+  format: string;
+  file: string;
+  createdAt: number;
+}
+
+export type AudioIndex = Record<string, AudioIndexEntry>;
+
+export function upsertIndexEntry(
+  index: AudioIndex,
+  hash: string,
+  entry: AudioIndexEntry,
+): AudioIndex {
+  return { ...index, [hash]: entry };
+}
+
+/** 按创建时间倒序取最近的若干条，用于在设置页里展示。 */
+export function recentIndexEntries(index: AudioIndex, limit: number): AudioIndexEntry[] {
+  return Object.values(index)
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .slice(0, Math.max(0, limit));
+}
+
+/** 文件被淘汰后，索引里对应的条目也要清掉，否则会指向不存在的音频。 */
+export function pruneIndexEntries(index: AudioIndex, removedFiles: string[]): AudioIndex {
+  const gone = new Set(removedFiles);
+  const out: AudioIndex = {};
+  for (const [hash, entry] of Object.entries(index)) {
+    if (!gone.has(entry.file)) out[hash] = entry;
+  }
+  return out;
+}
+
+export async function readAudioIndex(app: App): Promise<AudioIndex> {
+  const adapter = app.vault.adapter;
+  if (!(await adapter.exists(AUDIO_INDEX_PATH))) return {};
+  try {
+    return JSON.parse(await adapter.read(AUDIO_INDEX_PATH)) as AudioIndex;
+  } catch {
+    return {};
+  }
+}
+
+export async function writeAudioIndex(app: App, index: AudioIndex): Promise<void> {
+  const adapter = app.vault.adapter;
+  if (!(await adapter.exists(AUDIO_CACHE_DIR))) await adapter.mkdir(AUDIO_CACHE_DIR);
+  await adapter.write(AUDIO_INDEX_PATH, JSON.stringify(index, null, 2));
+}
+
+/**
+ * 把合成回来的音频写进本地缓存，并登记索引。
+ *
+ * 这是"减少消耗"的落点：写完之后，同一段文字再朗读就直接播本地文件，
+ * 不再发起任何合成请求。
+ */
+export async function cacheSynthesizedAudio(
+  app: App,
+  parts: { text: string; voice: string; model: string; format: string },
+  bytes: ArrayBuffer,
+): Promise<string> {
+  const hash = await hashCacheKey(buildCacheKey(parts));
+  const file = `${AUDIO_CACHE_DIR}/${hash}.${parts.format}`;
+
+  await writeCachedAudio(app, file, bytes);
+
+  const index = await readAudioIndex(app);
+  await writeAudioIndex(
+    app,
+    upsertIndexEntry(index, hash, { ...parts, file, createdAt: Date.now() }),
+  );
+
+  return file;
 }

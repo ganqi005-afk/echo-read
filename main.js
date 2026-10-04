@@ -1056,17 +1056,65 @@ async function removeCacheEntries(app, entries) {
   return removed;
 }
 async function clearAudioCache(app) {
-  return removeCacheEntries(app, await listAudioCache(app));
+  const entries = await listAudioCache(app);
+  const removed = await removeCacheEntries(app, entries);
+  await writeAudioIndex(app, {});
+  return removed;
 }
 async function pruneAudioCache(app, options) {
   const entries = await listAudioCache(app);
   const doomed = selectForRemoval(entries, { ...options, now: Date.now() });
-  return removeCacheEntries(app, doomed);
+  const removed = await removeCacheEntries(app, doomed);
+  if (doomed.length > 0) {
+    const index = await readAudioIndex(app);
+    await writeAudioIndex(app, pruneIndexEntries(index, doomed.map((entry) => entry.path)));
+  }
+  return removed;
 }
 function formatBytes(bytes) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+var AUDIO_INDEX_PATH = "_lingo/audio/index.json";
+function upsertIndexEntry(index, hash, entry) {
+  return { ...index, [hash]: entry };
+}
+function recentIndexEntries(index, limit) {
+  return Object.values(index).sort((a, b) => b.createdAt - a.createdAt).slice(0, Math.max(0, limit));
+}
+function pruneIndexEntries(index, removedFiles) {
+  const gone = new Set(removedFiles);
+  const out = {};
+  for (const [hash, entry] of Object.entries(index)) {
+    if (!gone.has(entry.file)) out[hash] = entry;
+  }
+  return out;
+}
+async function readAudioIndex(app) {
+  const adapter = app.vault.adapter;
+  if (!await adapter.exists(AUDIO_INDEX_PATH)) return {};
+  try {
+    return JSON.parse(await adapter.read(AUDIO_INDEX_PATH));
+  } catch {
+    return {};
+  }
+}
+async function writeAudioIndex(app, index) {
+  const adapter = app.vault.adapter;
+  if (!await adapter.exists(AUDIO_CACHE_DIR)) await adapter.mkdir(AUDIO_CACHE_DIR);
+  await adapter.write(AUDIO_INDEX_PATH, JSON.stringify(index, null, 2));
+}
+async function cacheSynthesizedAudio(app, parts, bytes) {
+  const hash = await hashCacheKey(buildCacheKey(parts));
+  const file = `${AUDIO_CACHE_DIR}/${hash}.${parts.format}`;
+  await writeCachedAudio(app, file, bytes);
+  const index = await readAudioIndex(app);
+  await writeAudioIndex(
+    app,
+    upsertIndexEntry(index, hash, { ...parts, file, createdAt: Date.now() })
+  );
+  return file;
 }
 
 // src/reader/actions.ts
@@ -1100,7 +1148,11 @@ async function speakSentence(app, plugin, text) {
     },
     text
   );
-  await writeCachedAudio(app, path, result.bytes);
+  await cacheSynthesizedAudio(
+    app,
+    { text, voice: settings.ttsVoice, model: settings.ttsModel, format },
+    result.bytes
+  );
   await playAudioBytes(result.bytes, result.mimeType);
   return "cloud";
 }
@@ -2132,6 +2184,7 @@ var EchoReadSettingTab = class extends import_obsidian5.PluginSettingTab {
     });
     const stats = new import_obsidian5.Setting(containerEl).setName("当前占用").setDesc("统计中…");
     void this.refreshCacheStats(stats);
+    void this.renderCachedSamples(containerEl);
     new import_obsidian5.Setting(containerEl).setName("自动清理天数").setDesc("超过这个天数的缓存会在插件启动时删除。填 0 表示不按天数清理。").addText(
       (text) => text.setValue(String(this.plugin.settings.audioCacheMaxAgeDays)).onChange(async (value) => {
         const days = Number(value);
@@ -2171,6 +2224,25 @@ var EchoReadSettingTab = class extends import_obsidian5.PluginSettingTab {
     setting.setDesc(
       stats.count === 0 ? "还没有缓存。朗读过的句子会自动存到这里。" : `已缓存 ${stats.count} 句，占用 ${formatBytes(stats.bytes)}。这些句子重读不再计费。`
     );
+  }
+  /**
+   * 把缓存里的句子原文列出来。文件名是内容哈希，人看不懂 ——
+   * 没有这一步，缓存就只是个数字，你无法核对到底存了什么。
+   */
+  async renderCachedSamples(containerEl) {
+    const recent = recentIndexEntries(await readAudioIndex(this.app), 10);
+    if (recent.length === 0) return;
+    containerEl.createEl("p", {
+      cls: "setting-item-description",
+      text: "最近缓存的句子（重读不再计费）："
+    });
+    const list = containerEl.createEl("ul");
+    for (const entry of recent) {
+      const preview = entry.text.length > 60 ? `${entry.text.slice(0, 60)}…` : entry.text;
+      const item = list.createEl("li", { text: `${preview}　—　${entry.voice} · ${entry.model}` });
+      item.style.fontSize = "var(--font-ui-smaller)";
+      item.style.color = "var(--text-muted)";
+    }
   }
   renderDiagnostics() {
     const { containerEl } = this;
@@ -2270,7 +2342,7 @@ ${ids.join("\n")}`;
   }
   async runWithDiagnostics(button, idleLabel, busyLabel, context, action) {
     this.diagnosticLines = [];
-    this.appendDiagnostic(`构建时间：${"2026-10-04T07:00:08.524Z"}`);
+    this.appendDiagnostic(`构建时间：${"2026-10-04T07:08:53.660Z"}`);
     this.appendDiagnostic(`时间：${(/* @__PURE__ */ new Date()).toLocaleString()}`);
     for (const line of context) this.appendDiagnostic(line);
     try {

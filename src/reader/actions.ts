@@ -3,7 +3,11 @@ import type EchoReadPlugin from "../main";
 import { playAudioBytes } from "../audio/playback";
 import { guessMimeType, synthesizeSpeech } from "../speech/tts-client";
 import { speak } from "../speech/tts-system";
-import { audioCachePath, readCachedAudio, writeCachedAudio } from "../store/audio-cache";
+import {
+  audioCachePath,
+  cacheSynthesizedAudio,
+  readCachedAudio,
+} from "../store/audio-cache";
 
 export type SpeakSource = "system" | "cache" | "cloud";
 
@@ -53,7 +57,11 @@ export async function speakSentence(
     text,
   );
 
-  await writeCachedAudio(app, path, result.bytes);
+  await cacheSynthesizedAudio(
+    app,
+    { text, voice: settings.ttsVoice, model: settings.ttsModel, format },
+    result.bytes,
+  );
   await playAudioBytes(result.bytes, result.mimeType);
   return "cloud";
 }
