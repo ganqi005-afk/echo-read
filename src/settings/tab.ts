@@ -329,8 +329,16 @@ export class EchoReadSettingTab extends PluginSettingTab {
         button.setButtonText("试听").onClick(async () => {
           button.setDisabled(true);
           button.setButtonText("合成中…");
-          await this.runWithDiagnostics(button, "试听", "合成中…", () =>
-            this.auditionCloudVoice(),
+          await this.runWithDiagnostics(
+            button,
+            "试听",
+            "合成中…",
+            [
+              "用途：云端合成试听",
+              `合成模型：${this.plugin.settings.ttsModel}`,
+              `音色：${this.plugin.settings.ttsVoice}`,
+            ],
+            () => this.auditionCloudVoice(),
           );
         }),
       );
@@ -407,7 +415,7 @@ export class EchoReadSettingTab extends PluginSettingTab {
         button.setButtonText("开始测试").onClick(async () => {
           button.setDisabled(true);
           button.setButtonText("测试中…");
-          await this.runWithDiagnostics(button, "开始测试", "测试中…", () =>
+          await this.runWithDiagnostics(button, "开始测试", "测试中…", this.asrContext(), () =>
             this.runConnectionTest(),
           );
         }),
@@ -433,7 +441,7 @@ export class EchoReadSettingTab extends PluginSettingTab {
         button.setButtonText("获取列表").onClick(async () => {
           button.setDisabled(true);
           button.setButtonText("获取中…");
-          await this.runWithDiagnostics(button, "获取列表", "获取中…", async () => {
+          await this.runWithDiagnostics(button, "获取列表", "获取中…", this.asrContext(), async () => {
             const ids = await this.runModelList();
             return `共 ${ids.length} 个模型：\n${ids.join("\n")}`;
           });
@@ -450,7 +458,7 @@ export class EchoReadSettingTab extends PluginSettingTab {
         button.setButtonText("检测 Key").onClick(async () => {
           button.setDisabled(true);
           button.setButtonText("检测中…");
-          await this.runWithDiagnostics(button, "检测 Key", "检测中…", async () => {
+          await this.runWithDiagnostics(button, "检测 Key", "检测中…", this.asrContext(), async () => {
             const result = await this.runKeyProbe();
             return [
               describeProbeOutcome(result),
@@ -484,17 +492,26 @@ export class EchoReadSettingTab extends PluginSettingTab {
       );
   }
 
+  /** 说明当前识别通道的配置，供诊断头部使用。 */
+  private asrContext(): string[] {
+    return [
+      "用途：语音识别",
+      `协议：${this.plugin.settings.transport}`,
+      `识别模型：${this.plugin.settings.asrModel}`,
+    ];
+  }
+
   private async runWithDiagnostics(
     button: { setDisabled(value: boolean): unknown; setButtonText(value: string): unknown },
     idleLabel: string,
     busyLabel: string,
+    context: string[],
     action: () => Promise<string>,
   ): Promise<void> {
     this.diagnosticLines = [];
     this.appendDiagnostic(`构建时间：${__BUILD_TIME__}`);
     this.appendDiagnostic(`时间：${new Date().toLocaleString()}`);
-    this.appendDiagnostic(`协议：${this.plugin.settings.transport}`);
-    this.appendDiagnostic(`模型：${this.plugin.settings.asrModel}`);
+    for (const line of context) this.appendDiagnostic(line);
     this.appendDiagnostic(
       `Key：${this.plugin.unlockedApiKey ? "已解锁" : "未解锁（请先点「仅解锁」）"}`,
     );
