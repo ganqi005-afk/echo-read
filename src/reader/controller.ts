@@ -1,5 +1,5 @@
 import { App, Notice } from "obsidian";
-import { playAudioBytes, stopPlayback } from "../audio/playback";
+import { stopPlayback } from "../audio/playback";
 import { Recorder } from "../audio/recorder";
 import { bytesToDataUri } from "../core/base64";
 import { diffDictation } from "../core/diff";
