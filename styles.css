@@ -38,3 +38,18 @@
   color: var(--text-muted);
   font-size: var(--font-ui-smaller);
 }
+
+/* 多行结果区（识别文本、分数明细）。默认不占位，有内容才显示。 */
+.echo-read-bar-result {
+  flex-basis: 100%;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  white-space: pre-wrap;
+  user-select: text;
+  max-height: 30vh;
+  overflow: auto;
+}
+
+.echo-read-bar-result:empty {
+  display: none;
+}

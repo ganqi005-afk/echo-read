@@ -1186,6 +1186,9 @@ var ReadingController = class {
   currentSpans = [];
   bar = null;
   statusEl = null;
+  resultEl = null;
+  shadowButton = null;
+  recorder;
   register() {
     this.plugin.registerMarkdownPostProcessor((element) => {
       element.querySelectorAll("p").forEach((paragraph) => decorateParagraph(paragraph));
@@ -1208,6 +1211,7 @@ var ReadingController = class {
     this.selectSentence(index, span);
   }
   selectSentence(index, span) {
+    this.cancelRecording();
     this.clearHighlight();
     const scope = span.closest(`[${PARAGRAPH_ATTR}]`) ?? document;
     const spans = Array.from(
@@ -1223,6 +1227,7 @@ var ReadingController = class {
     this.currentSpans = [];
   }
   clearSelection() {
+    this.cancelRecording();
     this.clearHighlight();
     this.currentText = "";
     stopSpeaking();
@@ -1231,45 +1236,121 @@ var ReadingController = class {
   showBar() {
     const bar = this.ensureBar();
     bar.style.display = "flex";
-    if (this.statusEl) this.statusEl.setText("");
+    this.setStatus("");
+    this.setResult("");
   }
   ensureBar() {
     if (this.bar) return this.bar;
     const bar = document.body.createDiv({ cls: "echo-read-bar" });
-    bar.createEl("button", { text: "朗读" }).addEventListener("click", () => {
-      void this.speak();
-    });
+    bar.createEl("button", { text: "朗读" }).addEventListener("click", () => void this.speak());
+    this.shadowButton = bar.createEl("button", { text: "跟读打分" });
+    this.shadowButton.addEventListener("click", () => void this.toggleShadowing());
     bar.createEl("button", { text: "停止" }).addEventListener("click", () => {
       stopSpeaking();
+      this.cancelRecording();
     });
-    bar.createEl("button", { text: "关闭" }).addEventListener("click", () => {
-      this.clearSelection();
-    });
+    bar.createEl("button", { text: "关闭" }).addEventListener("click", () => this.clearSelection());
     this.statusEl = bar.createDiv({ cls: "echo-read-bar-status" });
+    this.resultEl = bar.createDiv({ cls: "echo-read-bar-result" });
     this.bar = bar;
     return bar;
   }
   async speak() {
     if (!this.currentText.trim()) return;
+    this.setResult("");
     this.setStatus("朗读中…");
     try {
       const source = await speakSentence(this.app, this.plugin, this.currentText);
       this.setStatus(
-        source === "cache" ? "已朗读（命中缓存）" : source === "cloud" ? "已朗读（云端合成）" : "已朗读"
+        source === "cache" ? "已朗读（命中缓存，未计费）" : source === "cloud" ? "已朗读（云端合成）" : "已朗读"
       );
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.setStatus(`失败：${message}`);
-      new import_obsidian4.Notice(`朗读失败：${message}`, 8e3);
+      this.reportFailure("朗读", error);
     }
+  }
+  /** 跟读：第一次点开始录音，第二次点结束并打分。 */
+  async toggleShadowing() {
+    if (this.recorder) {
+      await this.finishShadowing();
+      return;
+    }
+    if (!this.currentText.trim()) return;
+    try {
+      this.recorder = new Recorder();
+      await this.recorder.start();
+      this.setResult("");
+      this.setStatus("● 录音中… 读完后再点一次「跟读打分」");
+      if (this.shadowButton) this.shadowButton.setText("结束并评分");
+    } catch (error) {
+      this.recorder = void 0;
+      this.reportFailure("录音", error);
+    }
+  }
+  async finishShadowing() {
+    const recorder = this.recorder;
+    if (!recorder) return;
+    this.recorder = void 0;
+    if (this.shadowButton) this.shadowButton.setText("跟读打分");
+    this.setStatus("识别中…");
+    try {
+      const recording = await recorder.stop();
+      const wav = encodeWav(recording.samples, recording.sampleRate);
+      const dataUri = bytesToDataUri(new Uint8Array(wav), "audio/wav");
+      const settings = this.plugin.settings;
+      const apiKey = this.plugin.unlockedKeys[settings.asrKeyId];
+      if (!settings.asrKeyId || !apiKey) {
+        throw new Error("语音识别尚未绑定或解锁 Key，请到插件设置里处理。");
+      }
+      const text = await transcribeAudio(
+        {
+          baseUrl: settings.asrBaseUrl,
+          apiKey,
+          model: settings.asrModel,
+          transport: settings.asrTransport
+        },
+        dataUri
+      );
+      const stats = diffDictation(this.currentText, text).stats;
+      const score = scoreAttempt(this.currentText, stats, recording.durationMs);
+      this.setStatus(
+        `准确度 ${score.accuracy}　完整度 ${score.completeness}　流利度 ${score.fluency}　总分 ${score.overall}`
+      );
+      this.setResult(
+        [
+          `识别：${text || "（空）"}`,
+          `漏 ${stats.missing}　多 ${stats.extra}　错 ${stats.wrong}　用时 ${(recording.durationMs / 1e3).toFixed(1)} 秒`
+        ].join("\n")
+      );
+    } catch (error) {
+      this.reportFailure("跟读评分", error);
+    }
+  }
+  cancelRecording() {
+    if (!this.recorder) return;
+    const recorder = this.recorder;
+    this.recorder = void 0;
+    if (this.shadowButton) this.shadowButton.setText("跟读打分");
+    void recorder.stop().catch(() => void 0);
+  }
+  reportFailure(action, error) {
+    const message = error instanceof Error ? error.message : String(error);
+    this.setStatus(`${action}失败`);
+    this.setResult(message);
+    new import_obsidian4.Notice(`${action}失败：${message}`, 8e3);
   }
   setStatus(text) {
     this.statusEl?.setText(text);
   }
+  setResult(text) {
+    this.resultEl?.setText(text);
+  }
   dispose() {
+    this.cancelRecording();
     this.bar?.remove();
     this.bar = null;
     this.statusEl = null;
+    this.resultEl = null;
+    this.shadowButton = null;
   }
 };
 
@@ -1891,7 +1972,7 @@ ${ids.join("\n")}`;
   }
   async runWithDiagnostics(button, idleLabel, busyLabel, context, action) {
     this.diagnosticLines = [];
-    this.appendDiagnostic(`构建时间：${"2026-10-04T06:15:45.871Z"}`);
+    this.appendDiagnostic(`构建时间：${"2026-10-04T06:22:12.774Z"}`);
     this.appendDiagnostic(`时间：${(/* @__PURE__ */ new Date()).toLocaleString()}`);
     for (const line of context) this.appendDiagnostic(line);
     try {
