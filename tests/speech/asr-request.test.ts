@@ -3,7 +3,6 @@ import {
   buildAsrBody,
   buildOpenAiCompatibleBody,
   extractTranscript,
-  stripDataUriPrefix,
 } from "../../src/speech/asr-request";
 
 interface LooseBody {
@@ -15,6 +14,7 @@ interface LooseBody {
 interface OpenAiBody {
   model: string;
   input?: unknown;
+  stream?: boolean;
   messages: Array<{
     role: string;
     content: Array<{ type: string; input_audio: { data: string; format: string } }>;
@@ -48,14 +48,27 @@ describe("buildAsrBody", () => {
 });
 
 describe("buildOpenAiCompatibleBody", () => {
-  it("strips the data uri prefix and moves the format into its own field", () => {
+  // 依据百炼「OpenAI 兼容-Chat」与「Qwen-ASR API 参考」：
+  // input_audio.data 要求传 Base64 Data URL（带 data: 前缀），
+  // 而不是 OpenAI 官方规范里的纯 base64。剥掉前缀会导致 HTTP 400。
+  it("keeps the full Data URL in the data field", () => {
     const body = buildOpenAiCompatibleBody({
       model: "qwen-audio-3.0-asr-flash",
       audioDataUri: "data:audio/wav;base64,QUJD",
     }) as OpenAiBody;
 
-    expect(body.messages[0].content[0].input_audio.data).toBe("QUJD");
+    expect(body.messages[0].content[0].input_audio.data).toBe(
+      "data:audio/wav;base64,QUJD",
+    );
     expect(body.messages[0].content[0].input_audio.format).toBe("wav");
+  });
+
+  it("disables streaming, matching the documented example", () => {
+    const body = buildOpenAiCompatibleBody({
+      model: "m",
+      audioDataUri: "data:audio/wav;base64,QUJD",
+    }) as OpenAiBody;
+    expect(body.stream).toBe(false);
   });
 
   it("has no DashScope-style input wrapper", () => {
@@ -64,16 +77,6 @@ describe("buildOpenAiCompatibleBody", () => {
       audioDataUri: "data:audio/wav;base64,QUJD",
     }) as OpenAiBody;
     expect(body.input).toBeUndefined();
-  });
-});
-
-describe("stripDataUriPrefix", () => {
-  it("removes the prefix", () => {
-    expect(stripDataUriPrefix("data:audio/wav;base64,QUJD")).toBe("QUJD");
-  });
-
-  it("leaves raw base64 untouched", () => {
-    expect(stripDataUriPrefix("QUJD")).toBe("QUJD");
   });
 });
 

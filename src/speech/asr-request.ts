@@ -5,10 +5,6 @@ export interface AsrRequestOptions {
   format?: string;
 }
 
-export function stripDataUriPrefix(dataUri: string): string {
-  return dataUri.replace(/^data:[^;]+;base64,/, "");
-}
-
 export function buildAsrBody(options: AsrRequestOptions): unknown {
   return {
     model: options.model,
@@ -31,13 +27,17 @@ export function buildAsrBody(options: AsrRequestOptions): unknown {
 
 /**
  * OpenAI 兼容端点（例如百炼 Token Plan）的请求体。
- * 与 DashScope 原生格式有两处关键差异：
- * 1. 音频只传纯 base64，不带 `data:...;base64,` 前缀
- * 2. 音频格式作为独立字段传入
+ *
+ * 注意一个反直觉的地方：`input_audio.data` 要传**完整的 Base64 Data URL**
+ * （带 `data:audio/wav;base64,` 前缀），而不是 OpenAI 官方规范里的纯 base64。
+ * 依据：百炼「OpenAI 兼容-Chat」参数说明 ——「音频的 URL 或 Base64 Data URL」；
+ * 以及「Qwen-ASR API 参考」的示例 ——「data:audio/wav;base64,SUQzBAAA...」。
+ * 曾经剥掉前缀，结果是 HTTP 400。
  */
 export function buildOpenAiCompatibleBody(options: AsrRequestOptions): unknown {
   return {
     model: options.model,
+    stream: false,
     messages: [
       {
         role: "user",
@@ -45,7 +45,7 @@ export function buildOpenAiCompatibleBody(options: AsrRequestOptions): unknown {
           {
             type: "input_audio",
             input_audio: {
-              data: stripDataUriPrefix(options.audioDataUri),
+              data: options.audioDataUri,
               format: options.format ?? "wav",
             },
           },

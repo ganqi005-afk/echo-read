@@ -294,9 +294,6 @@ function round1(value) {
 var import_obsidian = require("obsidian");
 
 // src/speech/asr-request.ts
-function stripDataUriPrefix(dataUri) {
-  return dataUri.replace(/^data:[^;]+;base64,/, "");
-}
 function buildAsrBody(options) {
   return {
     model: options.model,
@@ -319,6 +316,7 @@ function buildAsrBody(options) {
 function buildOpenAiCompatibleBody(options) {
   return {
     model: options.model,
+    stream: false,
     messages: [
       {
         role: "user",
@@ -326,7 +324,7 @@ function buildOpenAiCompatibleBody(options) {
           {
             type: "input_audio",
             input_audio: {
-              data: stripDataUriPrefix(options.audioDataUri),
+              data: options.audioDataUri,
               format: options.format ?? "wav"
             }
           }
@@ -414,13 +412,19 @@ async function transcribeAudio(options, audioDataUri) {
     throw: false
   });
   if (response.status < 200 || response.status >= 300) {
+    const body = response.text ?? "";
+    console.error("[Echo Read] \u8BED\u97F3\u8BC6\u522B\u8BF7\u6C42\u5931\u8D25", {
+      status: response.status,
+      url,
+      body
+    });
     throw new Error(
-      `\u8BED\u97F3\u8BC6\u522B\u8BF7\u6C42\u5931\u8D25\uFF08HTTP ${response.status}\uFF09\uFF1A${truncate(response.text)}`
+      `\u8BED\u97F3\u8BC6\u522B\u8BF7\u6C42\u5931\u8D25\uFF08HTTP ${response.status}\uFF09\uFF1A${truncate(body, 600)}`
     );
   }
   return extractTranscript(response.json);
 }
-function truncate(text, limit = 300) {
+function truncate(text, limit = 600) {
   return text.length > limit ? `${text.slice(0, limit)}\u2026` : text;
 }
 

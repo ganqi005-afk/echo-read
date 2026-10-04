@@ -63,14 +63,21 @@ export async function transcribeAudio(
   });
 
   if (response.status < 200 || response.status >= 300) {
+    const body = response.text ?? "";
+    // 完整响应只进控制台便于排查；URL 不含凭据（Key 走 Authorization 头）
+    console.error("[Echo Read] 语音识别请求失败", {
+      status: response.status,
+      url,
+      body,
+    });
     throw new Error(
-      `语音识别请求失败（HTTP ${response.status}）：${truncate(response.text)}`,
+      `语音识别请求失败（HTTP ${response.status}）：${truncate(body, 600)}`,
     );
   }
 
   return extractTranscript(response.json);
 }
 
-function truncate(text: string, limit = 300): string {
+function truncate(text: string, limit = 600): string {
   return text.length > limit ? `${text.slice(0, limit)}…` : text;
 }
