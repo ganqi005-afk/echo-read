@@ -4,6 +4,7 @@ import {
   formatBytes,
   pruneIndexEntries,
   recentIndexEntries,
+  resolveAudioRoot,
   selectForRemoval,
   summarizeCache,
   toHex,
@@ -11,6 +12,37 @@ import {
   type AudioIndex,
   type CacheEntry,
 } from "../../src/store/audio-cache";
+
+describe("resolveAudioRoot", () => {
+  // 音频跟随 Obsidian 自己的附件目录设置，这样它就是普通的 vault 附件
+  it("puts audio in a dedicated subfolder at the vault root by default", () => {
+    expect(resolveAudioRoot("", "笔记.md")).toBe("echo-read");
+    expect(resolveAudioRoot("/", "笔记.md")).toBe("echo-read");
+  });
+
+  it("follows a fixed attachment folder", () => {
+    expect(resolveAudioRoot("附件", "Reading/笔记.md")).toBe("附件/echo-read");
+  });
+
+  it("strips surrounding slashes from a fixed folder", () => {
+    expect(resolveAudioRoot("/附件/", "笔记.md")).toBe("附件/echo-read");
+  });
+
+  it("resolves a note-relative setting against the note's folder", () => {
+    expect(resolveAudioRoot("./", "Reading/笔记.md")).toBe("Reading/echo-read");
+    expect(resolveAudioRoot("./media", "Reading/笔记.md")).toBe("Reading/media/echo-read");
+  });
+
+  it("handles a note at the vault root for a relative setting", () => {
+    expect(resolveAudioRoot("./", "笔记.md")).toBe("echo-read");
+  });
+
+  // 相对设置会让同一句话在不同笔记里各存一份，跨笔记去重失效 ——
+  // 这是跟随用户设置的代价，测试把它固定下来，避免以后误以为是 bug
+  it("produces different roots for different notes when the setting is relative", () => {
+    expect(resolveAudioRoot("./", "A/笔记.md")).not.toBe(resolveAudioRoot("./", "B/笔记.md"));
+  });
+});
 
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = 1_000 * DAY; // 固定"现在"，避免测试依赖真实时间

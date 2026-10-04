@@ -8,6 +8,7 @@ import { speak } from "../speech/tts-system";
 import {
   audioCachePath,
   cacheSynthesizedAudio,
+  currentAudioRoot,
   readCachedAudio,
 } from "../store/audio-cache";
 
@@ -33,7 +34,8 @@ export async function speakSentence(
 
   const voice = toTtsVoice(settings);
   const signature = voiceSignature(voice);
-  const path = await audioCachePath(signature, text, voice.format);
+  const root = currentAudioRoot(app);
+  const path = await audioCachePath(root, signature, text, voice.format);
 
   const cached = await readCachedAudio(app, path);
   if (cached) {
@@ -53,6 +55,7 @@ export async function speakSentence(
 
   await cacheSynthesizedAudio(
     app,
+    root,
     signature,
     { text, format: voice.format, voice: voice.voice, model: voice.model },
     result.bytes,

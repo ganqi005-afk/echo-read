@@ -1874,7 +1874,41 @@ function truncate3(text, limit) {
 }
 
 // src/store/audio-cache.ts
-var AUDIO_CACHE_DIR = "_lingo/audio";
+var AUDIO_INDEX_PATH = "_lingo/audio-index.json";
+var AUDIO_SUBFOLDER = "echo-read";
+var LEGACY_AUDIO_DIR = "_lingo/audio";
+function joinPath(...parts) {
+  return parts.filter((part) => part !== "").join("/").replace(/\/{2,}/g, "/");
+}
+async function ensureDir(adapter, dir) {
+  if (dir === "" || await adapter.exists(dir)) return;
+  const segments = dir.split("/");
+  let current2 = "";
+  for (const segment of segments) {
+    current2 = current2 === "" ? segment : `${current2}/${segment}`;
+    if (!await adapter.exists(current2)) await adapter.mkdir(current2);
+  }
+}
+function resolveAudioRoot(attachmentFolderPath, notePath) {
+  const raw = (attachmentFolderPath ?? "").trim();
+  const noteDir = notePath.includes("/") ? notePath.slice(0, notePath.lastIndexOf("/")) : "";
+  if (raw === "" || raw === "/") return AUDIO_SUBFOLDER;
+  if (raw === "./") return joinPath(noteDir, AUDIO_SUBFOLDER);
+  if (raw.startsWith("./")) return joinPath(noteDir, raw.slice(2), AUDIO_SUBFOLDER);
+  return joinPath(raw.replace(/^\/+|\/+$/g, ""), AUDIO_SUBFOLDER);
+}
+function currentAudioRoot(app) {
+  const vault = app.vault;
+  let attachmentFolder = "";
+  try {
+    const configured = vault.getConfig?.("attachmentFolderPath");
+    if (typeof configured === "string") attachmentFolder = configured;
+  } catch {
+    attachmentFolder = "";
+  }
+  const notePath = app.workspace.getActiveFile()?.path ?? "";
+  return resolveAudioRoot(attachmentFolder, notePath);
+}
 function toHex(bytes) {
   return Array.from(new Uint8Array(bytes)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
@@ -1885,9 +1919,9 @@ async function hashCacheKey(key) {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key));
   return toHex(digest).slice(0, 32);
 }
-async function audioCachePath(signature, text, format) {
+async function audioCachePath(root, signature, text, format) {
   const hash = await hashCacheKey(buildCacheKey(signature, text));
-  return `${AUDIO_CACHE_DIR}/${hash}.${format}`;
+  return joinPath(root, `${hash}.${format}`);
 }
 async function readCachedAudio(app, path) {
   const adapter = app.vault.adapter;
@@ -1900,8 +1934,20 @@ async function readCachedAudio(app, path) {
 }
 async function writeCachedAudio(app, path, bytes) {
   const adapter = app.vault.adapter;
-  if (!await adapter.exists(AUDIO_CACHE_DIR)) await adapter.mkdir(AUDIO_CACHE_DIR);
+  const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+  await ensureDir(adapter, dir);
   await adapter.writeBinary(path, bytes);
+}
+async function cacheSynthesizedAudio(app, root, signature, parts, bytes) {
+  const hash = await hashCacheKey(buildCacheKey(signature, parts.text));
+  const file = joinPath(root, `${hash}.${parts.format}`);
+  await writeCachedAudio(app, file, bytes);
+  const index = await readAudioIndex(app);
+  await writeAudioIndex(
+    app,
+    upsertIndexEntry(index, hash, { ...parts, file, createdAt: Date.now() })
+  );
+  return file;
 }
 function summarizeCache(entries) {
   return {
@@ -1929,12 +1975,12 @@ function selectForRemoval(entries, options) {
   }
   return entries.filter((entry) => doomed.has(entry.path));
 }
-async function listAudioCache(app) {
+async function listAudioCache(app, root) {
   const adapter = app.vault.adapter;
-  if (!await adapter.exists(AUDIO_CACHE_DIR)) return [];
+  if (!await adapter.exists(root)) return [];
   let files = [];
   try {
-    files = (await adapter.list(AUDIO_CACHE_DIR)).files;
+    files = (await adapter.list(root)).files;
   } catch {
     return [];
   }
@@ -1948,11 +1994,12 @@ async function listAudioCache(app) {
   }
   return entries;
 }
-async function listAudioFilePaths(app) {
+async function listAudioFilePaths(app, root) {
   const adapter = app.vault.adapter;
-  if (!await adapter.exists(AUDIO_CACHE_DIR)) return /* @__PURE__ */ new Set();
+  if (!await adapter.exists(root)) return /* @__PURE__ */ new Set();
   try {
-    return new Set((await adapter.list(AUDIO_CACHE_DIR)).files);
+    const files = (await adapter.list(root)).files;
+    return new Set(files.filter((file) => !file.endsWith(".json")));
   } catch {
     return /* @__PURE__ */ new Set();
   }
@@ -1969,14 +2016,13 @@ async function removeCacheEntries(app, entries) {
   }
   return removed;
 }
-async function clearAudioCache(app) {
-  const entries = await listAudioCache(app);
-  const removed = await removeCacheEntries(app, entries);
+async function clearAudioCache(app, root) {
+  const removed = await removeCacheEntries(app, await listAudioCache(app, root));
   await writeAudioIndex(app, {});
   return removed;
 }
-async function pruneAudioCache(app, options) {
-  const entries = await listAudioCache(app);
+async function pruneAudioCache(app, root, options) {
+  const entries = await listAudioCache(app, root);
   const doomed = selectForRemoval(entries, { ...options, now: Date.now() });
   const removed = await removeCacheEntries(app, doomed);
   if (doomed.length > 0) {
@@ -1985,12 +2031,36 @@ async function pruneAudioCache(app, options) {
   }
   return removed;
 }
+async function migrateAudioCache(app, targetRoot) {
+  if (targetRoot === LEGACY_AUDIO_DIR) return 0;
+  const adapter = app.vault.adapter;
+  if (!await adapter.exists(LEGACY_AUDIO_DIR)) return 0;
+  let files = [];
+  try {
+    files = (await adapter.list(LEGACY_AUDIO_DIR)).files;
+  } catch {
+    return 0;
+  }
+  await ensureDir(adapter, targetRoot);
+  let moved = 0;
+  for (const file of files) {
+    if (file.endsWith(".json")) continue;
+    const name = file.slice(file.lastIndexOf("/") + 1);
+    const destination = joinPath(targetRoot, name);
+    try {
+      if (await adapter.exists(destination)) continue;
+      await adapter.rename(file, destination);
+      moved++;
+    } catch {
+    }
+  }
+  return moved;
+}
 function formatBytes(bytes) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
-var AUDIO_INDEX_PATH = "_lingo/audio/index.json";
 function upsertIndexEntry(index, hash, entry) {
   return { ...index, [hash]: entry };
 }
@@ -2016,19 +2086,8 @@ async function readAudioIndex(app) {
 }
 async function writeAudioIndex(app, index) {
   const adapter = app.vault.adapter;
-  if (!await adapter.exists(AUDIO_CACHE_DIR)) await adapter.mkdir(AUDIO_CACHE_DIR);
+  await ensureDir(adapter, "_lingo");
   await adapter.write(AUDIO_INDEX_PATH, JSON.stringify(index, null, 2));
-}
-async function cacheSynthesizedAudio(app, signature, parts, bytes) {
-  const hash = await hashCacheKey(buildCacheKey(signature, parts.text));
-  const file = `${AUDIO_CACHE_DIR}/${hash}.${parts.format}`;
-  await writeCachedAudio(app, file, bytes);
-  const index = await readAudioIndex(app);
-  await writeAudioIndex(
-    app,
-    upsertIndexEntry(index, hash, { ...parts, file, createdAt: Date.now() })
-  );
-  return file;
 }
 
 // src/reader/actions.ts
@@ -2040,7 +2099,8 @@ async function speakSentence(app, plugin, text) {
   }
   const voice = toTtsVoice(settings);
   const signature = voiceSignature(voice);
-  const path = await audioCachePath(signature, text, voice.format);
+  const root = currentAudioRoot(app);
+  const path = await audioCachePath(root, signature, text, voice.format);
   const cached = await readCachedAudio(app, path);
   if (cached) {
     await playAudioBytes(cached, guessMimeType(voice.format));
@@ -2056,6 +2116,7 @@ async function speakSentence(app, plugin, text) {
   const result = await synthesizeSpeech({ baseUrl: settings.ttsBaseUrl, apiKey, voice }, text);
   await cacheSynthesizedAudio(
     app,
+    root,
     signature,
     { text, format: voice.format, voice: voice.voice, model: voice.model },
     result.bytes
@@ -2278,7 +2339,7 @@ var ReadingController = class {
    */
   async refreshCachedPaths() {
     try {
-      this.cachedPaths = await listAudioFilePaths(this.app);
+      this.cachedPaths = await listAudioFilePaths(this.app, currentAudioRoot(this.app));
     } catch {
       this.cachedPaths = null;
     }
@@ -2298,7 +2359,9 @@ var ReadingController = class {
     for (const group of collectSentenceGroups(root)) {
       const text = this.textOf(group);
       if (text.trim() === "") continue;
-      const cached = paths.has(await audioCachePath(signature, text, voice.format));
+      const cached = paths.has(
+        await audioCachePath(currentAudioRoot(this.app), signature, text, voice.format)
+      );
       for (const span of group) span.classList.toggle(CACHED_CLASS, cached);
     }
   }
@@ -3332,7 +3395,7 @@ var EchoReadSettingTab = class extends import_obsidian7.PluginSettingTab {
     );
     new import_obsidian7.Setting(containerEl).setName("立即清理").setDesc("按上面的规则淘汰一次。").addButton(
       (button) => button.setButtonText("执行清理").onClick(async () => {
-        const removed = await pruneAudioCache(this.app, {
+        const removed = await pruneAudioCache(this.app, currentAudioRoot(this.app), {
           maxAgeDays: this.plugin.settings.audioCacheMaxAgeDays,
           maxBytes: this.plugin.settings.audioCacheMaxBytes
         });
@@ -3344,16 +3407,17 @@ var EchoReadSettingTab = class extends import_obsidian7.PluginSettingTab {
       "删除全部缓存。删掉**只是下次重新生成**，不会丢失任何笔记内容 —— 代价是那些句子要重新付一次合成费。"
     ).addButton(
       (button) => button.setButtonText("全部清空").setWarning().onClick(async () => {
-        const removed = await clearAudioCache(this.app);
+        const removed = await clearAudioCache(this.app, currentAudioRoot(this.app));
         new import_obsidian7.Notice(`已清空 ${removed} 个缓存文件。`);
         this.display();
       })
     );
   }
   async refreshCacheStats(setting) {
-    const stats = summarizeCache(await listAudioCache(this.app));
+    const root = currentAudioRoot(this.app);
+    const stats = summarizeCache(await listAudioCache(this.app, root));
     setting.setDesc(
-      stats.count === 0 ? "还没有缓存。朗读过的句子会自动存到这里。" : `已缓存 ${stats.count} 句，占用 ${formatBytes(stats.bytes)}。这些句子重读不再计费。`
+      stats.count === 0 ? `还没有缓存。朗读过的句子会自动存到 ${root}/。` : `已缓存 ${stats.count} 句，占用 ${formatBytes(stats.bytes)}。位置：${root}/　·　这些句子重读不再计费。`
     );
   }
   /**
@@ -3496,7 +3560,7 @@ ${ids.join("\n")}`;
   }
   async runWithDiagnostics(button, idleLabel, busyLabel, context, action) {
     this.diagnosticLines = [];
-    this.appendDiagnostic(`构建时间：${"2026-10-04T11:54:58.114Z"}`);
+    this.appendDiagnostic(`构建时间：${"2026-10-04T12:17:51.281Z"}`);
     this.appendDiagnostic(`时间：${(/* @__PURE__ */ new Date()).toLocaleString()}`);
     for (const line of context) this.appendDiagnostic(line);
     try {
@@ -3590,7 +3654,8 @@ ${previewRequestBody(
     this.appendDiagnostic(`模型系列：${ttsFamilySpec(detectTtsFamily(voice.model)).name}`);
     this.appendDiagnostic(`请求体预览：
 ${previewTtsBody(voice, text)}`);
-    const path = await audioCachePath(signature, text, voice.format);
+    const root = currentAudioRoot(this.app);
+    const path = await audioCachePath(root, signature, text, voice.format);
     let bytes = await readCachedAudio(this.app, path);
     const cached = bytes !== void 0;
     if (!bytes) {
@@ -3598,6 +3663,7 @@ ${previewTtsBody(voice, text)}`);
       bytes = result.bytes;
       await cacheSynthesizedAudio(
         this.app,
+        root,
         signature,
         { text, format: voice.format, voice: voice.voice, model: voice.model },
         bytes
@@ -3645,7 +3711,11 @@ var EchoReadPlugin = class extends import_obsidian8.Plugin {
       callback: () => void this.buildReviewQueue()
     });
     new ReadingController(this.app, this).register();
-    void pruneAudioCache(this.app, {
+    const audioRoot = currentAudioRoot(this.app);
+    void migrateAudioCache(this.app, audioRoot).then((moved) => {
+      if (moved > 0) console.log(`[Echo Read] 已把 ${moved} 个音频搬到 ${audioRoot}`);
+    }).catch(() => void 0);
+    void pruneAudioCache(this.app, audioRoot, {
       maxAgeDays: this.settings.audioCacheMaxAgeDays,
       maxBytes: this.settings.audioCacheMaxBytes
     }).then((removed) => {

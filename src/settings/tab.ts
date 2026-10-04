@@ -29,6 +29,7 @@ import {
   audioCachePath,
   cacheSynthesizedAudio,
   clearAudioCache,
+  currentAudioRoot,
   formatBytes,
   listAudioCache,
   pruneAudioCache,
@@ -662,7 +663,7 @@ export class EchoReadSettingTab extends PluginSettingTab {
       .setDesc("按上面的规则淘汰一次。")
       .addButton((button) =>
         button.setButtonText("执行清理").onClick(async () => {
-          const removed = await pruneAudioCache(this.app, {
+          const removed = await pruneAudioCache(this.app, currentAudioRoot(this.app), {
             maxAgeDays: this.plugin.settings.audioCacheMaxAgeDays,
             maxBytes: this.plugin.settings.audioCacheMaxBytes,
           });
@@ -679,7 +680,7 @@ export class EchoReadSettingTab extends PluginSettingTab {
       )
       .addButton((button) =>
         button.setButtonText("全部清空").setWarning().onClick(async () => {
-          const removed = await clearAudioCache(this.app);
+          const removed = await clearAudioCache(this.app, currentAudioRoot(this.app));
           new Notice(`已清空 ${removed} 个缓存文件。`);
           this.display();
         }),
@@ -687,11 +688,13 @@ export class EchoReadSettingTab extends PluginSettingTab {
   }
 
   private async refreshCacheStats(setting: { setDesc(value: string): unknown }): Promise<void> {
-    const stats = summarizeCache(await listAudioCache(this.app));
+    const root = currentAudioRoot(this.app);
+    const stats = summarizeCache(await listAudioCache(this.app, root));
     setting.setDesc(
       stats.count === 0
-        ? "还没有缓存。朗读过的句子会自动存到这里。"
-        : `已缓存 ${stats.count} 句，占用 ${formatBytes(stats.bytes)}。这些句子重读不再计费。`,
+        ? `还没有缓存。朗读过的句子会自动存到 ${root}/。`
+        : `已缓存 ${stats.count} 句，占用 ${formatBytes(stats.bytes)}。` +
+            `位置：${root}/　·　这些句子重读不再计费。`,
     );
   }
 
@@ -997,7 +1000,8 @@ export class EchoReadSettingTab extends PluginSettingTab {
     this.appendDiagnostic(`模型系列：${ttsFamilySpec(detectTtsFamily(voice.model)).name}`);
     this.appendDiagnostic(`请求体预览：\n${previewTtsBody(voice, text)}`);
 
-    const path = await audioCachePath(signature, text, voice.format);
+    const root = currentAudioRoot(this.app);
+    const path = await audioCachePath(root, signature, text, voice.format);
     let bytes = await readCachedAudio(this.app, path);
     const cached = bytes !== undefined;
     if (!bytes) {
@@ -1005,6 +1009,7 @@ export class EchoReadSettingTab extends PluginSettingTab {
       bytes = result.bytes;
       await cacheSynthesizedAudio(
         this.app,
+        root,
         signature,
         { text, format: voice.format, voice: voice.voice, model: voice.model },
         bytes,

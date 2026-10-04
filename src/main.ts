@@ -2,7 +2,7 @@ import { Notice, Plugin, TFile } from "obsidian";
 import { RecorderModal } from "./recorder-modal";
 import { ReadingController } from "./reader/controller";
 import { loadKeyValues } from "./settings/store";
-import { pruneAudioCache } from "./store/audio-cache";
+import { currentAudioRoot, migrateAudioCache, pruneAudioCache } from "./store/audio-cache";
 import { ensurePracticePromptFile } from "./llm/client";
 import { REVIEW_PATH, generateReviewQueue, readCards } from "./review/store";
 import { selectDueCards } from "./review/cards";
@@ -44,7 +44,14 @@ export default class EchoReadPlugin extends Plugin {
     new ReadingController(this.app, this).register();
 
     // 启动时按设置淘汰过期或超量的示范音缓存，避免无限增长
-    void pruneAudioCache(this.app, {
+    const audioRoot = currentAudioRoot(this.app);
+    void migrateAudioCache(this.app, audioRoot)
+      .then((moved) => {
+        if (moved > 0) console.log(`[Echo Read] 已把 ${moved} 个音频搬到 ${audioRoot}`);
+      })
+      .catch(() => undefined);
+
+    void pruneAudioCache(this.app, audioRoot, {
       maxAgeDays: this.settings.audioCacheMaxAgeDays,
       maxBytes: this.settings.audioCacheMaxBytes,
     })

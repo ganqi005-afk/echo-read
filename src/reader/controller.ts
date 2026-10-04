@@ -19,7 +19,7 @@ import {
   SENTENCE_ATTR,
   decorateParagraph,
 } from "./decorate";
-import { audioCachePath, listAudioFilePaths } from "../store/audio-cache";
+import { audioCachePath, currentAudioRoot, listAudioFilePaths } from "../store/audio-cache";
 import { voiceSignature } from "../speech/tts-request";
 import { toTtsVoice } from "../settings/types";
 import { createCard, makeCardId } from "../review/cards";
@@ -94,7 +94,7 @@ export class ReadingController {
    */
   private async refreshCachedPaths(): Promise<void> {
     try {
-      this.cachedPaths = await listAudioFilePaths(this.app);
+      this.cachedPaths = await listAudioFilePaths(this.app, currentAudioRoot(this.app));
     } catch {
       this.cachedPaths = null;
     }
@@ -117,7 +117,9 @@ export class ReadingController {
     for (const group of collectSentenceGroups(root)) {
       const text = this.textOf(group);
       if (text.trim() === "") continue;
-      const cached = paths.has(await audioCachePath(signature, text, voice.format));
+      const cached = paths.has(
+        await audioCachePath(currentAudioRoot(this.app), signature, text, voice.format),
+      );
       for (const span of group) span.classList.toggle(CACHED_CLASS, cached);
     }
   }
