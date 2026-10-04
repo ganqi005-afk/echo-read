@@ -14,10 +14,14 @@ import { stopSpeaking } from "../speech/tts-system";
 import { speakSentence } from "./actions";
 import {
   CURRENT_CLASS,
+  CACHED_CLASS,
   PARAGRAPH_ATTR,
   SENTENCE_ATTR,
   decorateParagraph,
 } from "./decorate";
+import { audioCachePath, listAudioFilePaths } from "../store/audio-cache";
+import { voiceSignature } from "../speech/tts-request";
+import { toTtsVoice } from "../settings/types";
 
 /**
  * 阅读视图交互。
@@ -53,6 +57,8 @@ export class ReadingController {
   private lastPractice: PracticeContext | null = null;
   private continuous = false;
   private repositionQueued = false;
+  /** 已有的缓存文件路径。null 表示还没加载好。 */
+  private cachedPaths: Set<string> | null = null;
 
   constructor(
     private readonly app: App,
@@ -62,6 +68,7 @@ export class ReadingController {
   register(): void {
     this.plugin.registerMarkdownPostProcessor((element) => {
       element.querySelectorAll("p").forEach((paragraph) => decorateParagraph(paragraph));
+      void this.markCached(element);
     });
 
     this.plugin.registerDomEvent(document, "click", (event) => this.onClick(event));
@@ -72,6 +79,44 @@ export class ReadingController {
     this.plugin.registerDomEvent(window, "scroll", () => this.scheduleReposition(), true);
     this.plugin.registerDomEvent(window, "resize", () => this.scheduleReposition());
     this.plugin.register(() => this.dispose());
+    void this.refreshCachedPaths().then(() => this.markCached(document));
+  }
+
+  /**
+   * 加载已有的缓存文件路径。
+   *
+   * 用**文件路径**而不是索引来判断：文件名就是内容哈希，
+   * 所以连旧版本留下的缓存也算得进来；索引里的 signature 是后来才加的字段，
+   * 靠它反而会漏掉历史记录。
+   */
+  private async refreshCachedPaths(): Promise<void> {
+    try {
+      this.cachedPaths = await listAudioFilePaths(this.app);
+    } catch {
+      this.cachedPaths = null;
+    }
+  }
+
+  /**
+   * 给"已经有本地音频"的句子加标记。
+   *
+   * 判断的是**当前音色配置下**的缓存键，所以它表达的是
+   * "这一句现在能立刻播放、不产生费用"，而不是"历史上曾经合成过"。
+   * 换了音色之后标记会消失 —— 这是诚实的：旧音频确实用不上了。
+   */
+  private async markCached(root: ParentNode): Promise<void> {
+    const paths = this.cachedPaths;
+    if (!paths || paths.size === 0) return;
+
+    const voice = toTtsVoice(this.plugin.settings);
+    const signature = voiceSignature(voice);
+
+    for (const group of collectSentenceGroups(root)) {
+      const text = this.textOf(group);
+      if (text.trim() === "") continue;
+      const cached = paths.has(await audioCachePath(signature, text, voice.format));
+      for (const span of group) span.classList.toggle(CACHED_CLASS, cached);
+    }
   }
 
   // ---------------- 选择目标 ----------------
@@ -349,6 +394,12 @@ export class ReadingController {
             ? "已播放（模型返回的语音，已缓存）"
             : "已播放（系统语音）",
       );
+
+      // 刚合成完的句子要立刻带上标记，否则要等下次打开笔记才看得到
+      if (source === "cloud") {
+        await this.refreshCachedPaths();
+        void this.markCached(document);
+      }
     } catch (error) {
       this.reportFailure("朗读", error);
     }

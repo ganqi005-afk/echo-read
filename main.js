@@ -1663,6 +1663,15 @@ async function listAudioCache(app) {
   }
   return entries;
 }
+async function listAudioFilePaths(app) {
+  const adapter = app.vault.adapter;
+  if (!await adapter.exists(AUDIO_CACHE_DIR)) return /* @__PURE__ */ new Set();
+  try {
+    return new Set((await adapter.list(AUDIO_CACHE_DIR)).files);
+  } catch {
+    return /* @__PURE__ */ new Set();
+  }
+}
 async function removeCacheEntries(app, entries) {
   const adapter = app.vault.adapter;
   let removed = 0;
@@ -1864,6 +1873,7 @@ function isDecimal(s, dotIndex) {
 var SENTENCE_ATTR = "data-echo-read-sentence";
 var PARAGRAPH_ATTR = "data-echo-read-paragraph";
 var CURRENT_CLASS = "echo-read-current";
+var CACHED_CLASS = "echo-read-cached";
 var MIN_SENTENCES = 2;
 var MIN_LENGTH = 40;
 function decorateParagraph(paragraph) {
@@ -1958,9 +1968,12 @@ var ReadingController = class {
   lastPractice = null;
   continuous = false;
   repositionQueued = false;
+  /** 已有的缓存文件路径。null 表示还没加载好。 */
+  cachedPaths = null;
   register() {
     this.plugin.registerMarkdownPostProcessor((element) => {
       element.querySelectorAll("p").forEach((paragraph) => decorateParagraph(paragraph));
+      void this.markCached(element);
     });
     this.plugin.registerDomEvent(document, "click", (event) => this.onClick(event));
     this.plugin.registerDomEvent(document, "mouseup", () => this.scheduleSelectionCheck());
@@ -1968,6 +1981,40 @@ var ReadingController = class {
     this.plugin.registerDomEvent(window, "scroll", () => this.scheduleReposition(), true);
     this.plugin.registerDomEvent(window, "resize", () => this.scheduleReposition());
     this.plugin.register(() => this.dispose());
+    void this.refreshCachedPaths().then(() => this.markCached(document));
+  }
+  /**
+   * 加载已有的缓存文件路径。
+   *
+   * 用**文件路径**而不是索引来判断：文件名就是内容哈希，
+   * 所以连旧版本留下的缓存也算得进来；索引里的 signature 是后来才加的字段，
+   * 靠它反而会漏掉历史记录。
+   */
+  async refreshCachedPaths() {
+    try {
+      this.cachedPaths = await listAudioFilePaths(this.app);
+    } catch {
+      this.cachedPaths = null;
+    }
+  }
+  /**
+   * 给"已经有本地音频"的句子加标记。
+   *
+   * 判断的是**当前音色配置下**的缓存键，所以它表达的是
+   * "这一句现在能立刻播放、不产生费用"，而不是"历史上曾经合成过"。
+   * 换了音色之后标记会消失 —— 这是诚实的：旧音频确实用不上了。
+   */
+  async markCached(root) {
+    const paths = this.cachedPaths;
+    if (!paths || paths.size === 0) return;
+    const voice = toTtsVoice(this.plugin.settings);
+    const signature = voiceSignature(voice);
+    for (const group of collectSentenceGroups(root)) {
+      const text = this.textOf(group);
+      if (text.trim() === "") continue;
+      const cached = paths.has(await audioCachePath(signature, text, voice.format));
+      for (const span of group) span.classList.toggle(CACHED_CLASS, cached);
+    }
   }
   // ---------------- 选择目标 ----------------
   onClick(event) {
@@ -2178,6 +2225,10 @@ var ReadingController = class {
       this.setStatus(
         source === "cache" ? "已播放（命中缓存，未计费）" : source === "cloud" ? "已播放（模型返回的语音，已缓存）" : "已播放（系统语音）"
       );
+      if (source === "cloud") {
+        await this.refreshCachedPaths();
+        void this.markCached(document);
+      }
     } catch (error) {
       this.reportFailure("朗读", error);
     }
@@ -2868,6 +2919,10 @@ var EchoReadSettingTab = class extends import_obsidian7.PluginSettingTab {
     const stats = new import_obsidian7.Setting(containerEl).setName("当前占用").setDesc("统计中…");
     void this.refreshCacheStats(stats);
     void this.renderCachedSamples(containerEl);
+    containerEl.createEl("p", {
+      cls: "setting-item-description",
+      text: "已有缓存的句子在阅读视图里会带一条虚线标记 —— 点它一定瞬间出声、不产生费用。"
+    });
     new import_obsidian7.Setting(containerEl).setName("自动清理天数").setDesc("超过这个天数的缓存会在插件启动时删除。填 0 表示不按天数清理。").addText(
       (text) => text.setValue(String(this.plugin.settings.audioCacheMaxAgeDays)).onChange(async (value) => {
         const days = Number(value);
@@ -3048,7 +3103,7 @@ ${ids.join("\n")}`;
   }
   async runWithDiagnostics(button, idleLabel, busyLabel, context, action) {
     this.diagnosticLines = [];
-    this.appendDiagnostic(`构建时间：${"2026-10-04T11:07:37.453Z"}`);
+    this.appendDiagnostic(`构建时间：${"2026-10-04T11:09:50.606Z"}`);
     this.appendDiagnostic(`时间：${(/* @__PURE__ */ new Date()).toLocaleString()}`);
     for (const line of context) this.appendDiagnostic(line);
     try {

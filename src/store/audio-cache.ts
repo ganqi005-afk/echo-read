@@ -132,6 +132,22 @@ export async function listAudioCache(app: App): Promise<CacheEntry[]> {
   return entries;
 }
 
+/**
+ * 只取缓存文件的路径集合，用于"这句有没有缓存"的快速判断。
+ *
+ * 直接看文件而不是索引：文件名就是内容哈希，所以连旧版本的缓存也算得进来；
+ * 索引里的 signature 是后来才加的字段，靠它反而会漏掉历史记录。
+ */
+export async function listAudioFilePaths(app: App): Promise<Set<string>> {
+  const adapter = app.vault.adapter;
+  if (!(await adapter.exists(AUDIO_CACHE_DIR))) return new Set();
+  try {
+    return new Set((await adapter.list(AUDIO_CACHE_DIR)).files);
+  } catch {
+    return new Set();
+  }
+}
+
 export async function removeCacheEntries(app: App, entries: CacheEntry[]): Promise<number> {
   const adapter = app.vault.adapter;
   let removed = 0;

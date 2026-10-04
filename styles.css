@@ -9,6 +9,18 @@
   border-radius: var(--radius-s);
 }
 
+/*
+ * 已有本地音频的句子：一条很淡的虚线。
+ * 用虚线而不是背景色，是为了和「当前句」的选中背景明确区分 ——
+ * 两个标记可能同时出现在同一句上，不能互相盖住。
+ * 也不用链接色，避免看起来像超链接。
+ */
+.echo-read-cached {
+  text-decoration: underline dotted var(--text-faint);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
 .echo-read-bar {
   position: fixed;
   /* top / left 由脚本按选中句的位置实时计算，见 controller.positionPopover */

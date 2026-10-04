@@ -560,6 +560,11 @@ export class EchoReadSettingTab extends PluginSettingTab {
     void this.refreshCacheStats(stats);
     void this.renderCachedSamples(containerEl);
 
+    containerEl.createEl("p", {
+      cls: "setting-item-description",
+      text: "已有缓存的句子在阅读视图里会带一条虚线标记 —— 点它一定瞬间出声、不产生费用。",
+    });
+
     new Setting(containerEl)
       .setName("自动清理天数")
       .setDesc("超过这个天数的缓存会在插件启动时删除。填 0 表示不按天数清理。")

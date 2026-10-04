@@ -3,6 +3,8 @@ import { splitSentenceRanges, type SentenceRange } from "../core/sentence";
 export const SENTENCE_ATTR = "data-echo-read-sentence";
 export const PARAGRAPH_ATTR = "data-echo-read-paragraph";
 export const CURRENT_CLASS = "echo-read-current";
+/** 已有本地音频的句子。*/
+export const CACHED_CLASS = "echo-read-cached";
 
 const MIN_SENTENCES = 2;
 const MIN_LENGTH = 40;
