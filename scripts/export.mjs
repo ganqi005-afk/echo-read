@@ -11,9 +11,11 @@ const OPTIONAL = ["data.json"];
 const OUT_DIR = path.resolve("dist/echo-read");
 const ZIP_PATH = path.resolve("dist/echo-read.zip");
 
-// 真实密钥形态：sk- 后面还有一长串。代码里用来分类的前缀 "sk-sp-" 不会命中 ——
-// 它后面只有 3 个字符，够不到 12 的长度门槛
-const KEY_SHAPE = /sk-[A-Za-z0-9_-]{12,}/g;
+// 形态扫描只是兜底，真正可靠的是下面拿密钥库做逐字节比对。
+//
+// 门槛定在 20：实测真实 Key 都在 100 字符以上，而 CSS 类名（如 "ask-secondary"）
+// 里也含 "sk-"，门槛太低会误报、把导出挡下来。误报是安全方向，但会让人困惑。
+const KEY_SHAPE = /sk-[A-Za-z0-9_-]{20,}/g;
 
 function readDeployTarget() {
   try {
