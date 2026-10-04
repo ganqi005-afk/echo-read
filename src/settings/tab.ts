@@ -5,9 +5,11 @@ import {
   buildEndpoint,
   listModels,
   previewRequestBody,
+  probeApiKey,
   transcribeAudio,
   type Transport,
 } from "../speech/client";
+import { describeProbeOutcome } from "../speech/key-probe";
 import { loadVoices } from "../speech/tts-system";
 import type EchoReadPlugin from "../main";
 import {
@@ -323,6 +325,26 @@ export class EchoReadSettingTab extends PluginSettingTab {
         }),
       );
 
+    new Setting(containerEl)
+      .setName("只测 Key（不发音频）")
+      .setDesc(
+        "故意发一个参数不完整的请求：Key 无效会在鉴权阶段被拒（401），" +
+          "Key 有效则会走到参数校验并报参数错误。用来把「鉴权问题」和「音频问题」分开。",
+      )
+      .addButton((button) =>
+        button.setButtonText("检测 Key").onClick(async () => {
+          button.setDisabled(true);
+          button.setButtonText("检测中…");
+          await this.runWithDiagnostics(button, "检测 Key", "检测中…", async () => {
+            const result = await this.runKeyProbe();
+            return [
+              describeProbeOutcome(result),
+              `服务端原文：${result.detail || "（空）"}`,
+            ].join("\n");
+          });
+        }),
+      );
+
     this.diagnosticEl = containerEl.createEl("pre", { cls: "echo-read-diagnostic" });
     this.diagnosticEl.style.whiteSpace = "pre-wrap";
     this.diagnosticEl.style.userSelect = "text";
@@ -426,6 +448,18 @@ export class EchoReadSettingTab extends PluginSettingTab {
     if (!apiKey) throw new Error("尚未解锁 API Key。");
     if (!this.plugin.settings.baseUrl) throw new Error("尚未填写接入地址。");
     return listModels({ baseUrl: this.plugin.settings.baseUrl, apiKey });
+  }
+
+  private async runKeyProbe() {
+    const apiKey = this.plugin.unlockedApiKey;
+    if (!apiKey) throw new Error("尚未解锁 API Key。");
+    if (!this.plugin.settings.baseUrl) throw new Error("尚未填写接入地址。");
+    return probeApiKey({
+      baseUrl: this.plugin.settings.baseUrl,
+      apiKey,
+      model: this.plugin.settings.asrModel,
+      transport: this.plugin.settings.transport,
+    });
   }
 }
 

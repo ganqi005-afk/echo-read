@@ -5,6 +5,7 @@ import {
   extractTranscript,
 } from "./asr-request";
 import { extractModelIds } from "./models";
+import { buildProbeBody, classifyKeyProbe, type KeyProbeResult } from "./key-probe";
 
 export const DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com";
 export const DEFAULT_ASR_MODEL = "qwen-audio-3.0-asr-flash";
@@ -81,6 +82,49 @@ export async function listModels(options: {
   }
 
   return extractModelIds(response.json);
+}
+
+/**
+ * 只验证 Key 是否可用，不发送音频。
+ * 用参数不完整的请求做探针：Key 无效会在鉴权阶段被拦（401/403），
+ * Key 有效则会走到参数校验并报参数错误。
+ */
+export async function probeApiKey(options: {
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  transport: Transport;
+}): Promise<KeyProbeResult> {
+  if (!options.apiKey) throw new Error("尚未配置 API Key。");
+
+  const url = buildEndpoint(options.baseUrl, options.transport);
+  const response = await requestUrl({
+    url,
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${options.apiKey}`,
+      "Content-Type": "application/json",
+      "X-DashScope-SSE": "disable",
+    },
+    body: JSON.stringify(buildProbeBody(options.model, options.transport)),
+    throw: false,
+  });
+
+  const body = response.text ?? "";
+  return {
+    outcome: classifyKeyProbe(response.status, safeJson(response.text)),
+    status: response.status,
+    detail: body.slice(0, 400),
+  };
+}
+
+function safeJson(text: string | undefined): unknown {
+  if (!text) return undefined;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
 }
 
 /**

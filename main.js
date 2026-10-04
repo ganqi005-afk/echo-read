@@ -410,6 +410,39 @@ function safeStringify2(value) {
   }
 }
 
+// src/speech/key-probe.ts
+function buildProbeBody(model, transport) {
+  if (transport === "openai-compatible") {
+    return { model, messages: [] };
+  }
+  return {
+    model,
+    input: { messages: [] },
+    parameters: { format: "wav", sample_rate: "16000" }
+  };
+}
+function classifyKeyProbe(status, body) {
+  if (status === 401 || status === 403) return "invalid";
+  if (status >= 200 && status < 300) return "valid";
+  if (status === 400 && looksLikeServiceError(body)) return "valid";
+  return "unknown";
+}
+function looksLikeServiceError(body) {
+  if (!body || typeof body !== "object") return false;
+  const node = body;
+  return typeof node.request_id === "string" || typeof node.code === "string";
+}
+function describeProbeOutcome(result) {
+  switch (result.outcome) {
+    case "valid":
+      return `Key 可用（HTTP ${result.status}）。服务端已通过鉴权，返回的是业务层错误 —— 这是预期结果，因为探测请求本来就不完整。`;
+    case "invalid":
+      return `Key 被拒绝（HTTP ${result.status}）。请检查这把 Key 是否属于当前端点对应的平台与套餐。`;
+    default:
+      return `无法判断（HTTP ${result.status}）。服务端没有返回可用于判断的内容，通常是网关层直接拒绝。`;
+  }
+}
+
 // src/speech/client.ts
 var DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com";
 var DEFAULT_ASR_MODEL = "qwen-audio-3.0-asr-flash";
@@ -450,6 +483,35 @@ async function listModels(options) {
     throw new Error(`获取模型列表失败（HTTP ${response.status}）：${truncate(body, 400)}`);
   }
   return extractModelIds(response.json);
+}
+async function probeApiKey(options) {
+  if (!options.apiKey) throw new Error("尚未配置 API Key。");
+  const url = buildEndpoint(options.baseUrl, options.transport);
+  const response = await (0, import_obsidian.requestUrl)({
+    url,
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${options.apiKey}`,
+      "Content-Type": "application/json",
+      "X-DashScope-SSE": "disable"
+    },
+    body: JSON.stringify(buildProbeBody(options.model, options.transport)),
+    throw: false
+  });
+  const body = response.text ?? "";
+  return {
+    outcome: classifyKeyProbe(response.status, safeJson(response.text)),
+    status: response.status,
+    detail: body.slice(0, 400)
+  };
+}
+function safeJson(text) {
+  if (!text) return void 0;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return void 0;
+  }
 }
 async function transcribeAudio(options, audioDataUri) {
   if (!options.apiKey) {
@@ -958,6 +1020,21 @@ ${ids.join("\n")}`;
         });
       })
     );
+    new import_obsidian3.Setting(containerEl).setName("只测 Key（不发音频）").setDesc(
+      "故意发一个参数不完整的请求：Key 无效会在鉴权阶段被拒（401），Key 有效则会走到参数校验并报参数错误。用来把「鉴权问题」和「音频问题」分开。"
+    ).addButton(
+      (button) => button.setButtonText("检测 Key").onClick(async () => {
+        button.setDisabled(true);
+        button.setButtonText("检测中…");
+        await this.runWithDiagnostics(button, "检测 Key", "检测中…", async () => {
+          const result = await this.runKeyProbe();
+          return [
+            describeProbeOutcome(result),
+            `服务端原文：${result.detail || "（空）"}`
+          ].join("\n");
+        });
+      })
+    );
     this.diagnosticEl = containerEl.createEl("pre", { cls: "echo-read-diagnostic" });
     this.diagnosticEl.style.whiteSpace = "pre-wrap";
     this.diagnosticEl.style.userSelect = "text";
@@ -979,7 +1056,7 @@ ${ids.join("\n")}`;
   }
   async runWithDiagnostics(button, idleLabel, busyLabel, action) {
     this.diagnosticLines = [];
-    this.appendDiagnostic(`构建时间：${"2026-10-04T04:50:07.549Z"}`);
+    this.appendDiagnostic(`构建时间：${"2026-10-04T04:50:42.297Z"}`);
     this.appendDiagnostic(`时间：${(/* @__PURE__ */ new Date()).toLocaleString()}`);
     this.appendDiagnostic(`协议：${this.plugin.settings.transport}`);
     this.appendDiagnostic(`模型：${this.plugin.settings.asrModel}`);
@@ -1044,6 +1121,17 @@ ${previewRequestBody(
     if (!apiKey) throw new Error("尚未解锁 API Key。");
     if (!this.plugin.settings.baseUrl) throw new Error("尚未填写接入地址。");
     return listModels({ baseUrl: this.plugin.settings.baseUrl, apiKey });
+  }
+  async runKeyProbe() {
+    const apiKey = this.plugin.unlockedApiKey;
+    if (!apiKey) throw new Error("尚未解锁 API Key。");
+    if (!this.plugin.settings.baseUrl) throw new Error("尚未填写接入地址。");
+    return probeApiKey({
+      baseUrl: this.plugin.settings.baseUrl,
+      apiKey,
+      model: this.plugin.settings.asrModel,
+      transport: this.plugin.settings.transport
+    });
   }
 };
 function messageOf(error) {
