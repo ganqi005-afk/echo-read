@@ -1,5 +1,4 @@
 import { Plugin } from "obsidian";
-import { installDebugHook } from "./debug";
 import { RecorderModal } from "./recorder-modal";
 import { EchoReadSettingTab } from "./settings/tab";
 import { DEFAULT_SETTINGS, mergeSettings, type EchoReadSettings } from "./settings/types";
@@ -21,7 +20,6 @@ export default class EchoReadPlugin extends Plugin {
       name: "打开录音工作台",
       callback: () => this.openRecorder(),
     });
-    installDebugHook(); // 临时：Plan 2 Task 9 验收用，验收后删除
     console.log("Echo Read loaded");
   }
 

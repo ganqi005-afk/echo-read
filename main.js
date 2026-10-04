@@ -25,6 +25,9 @@ __export(main_exports, {
 module.exports = __toCommonJS(main_exports);
 var import_obsidian5 = require("obsidian");
 
+// src/recorder-modal.ts
+var import_obsidian2 = require("obsidian");
+
 // src/core/resample.ts
 function downsample(input, inputRate, outputRate) {
   if (outputRate >= inputRate) return input.slice();
@@ -552,42 +555,7 @@ function truncate(text, limit = 600) {
   return text.length > limit ? `${text.slice(0, limit)}…` : text;
 }
 
-// src/debug.ts
-var current;
-function installDebugHook() {
-  window.echoReadDebug = {
-    async start() {
-      current = new Recorder();
-      await current.start();
-      return "录音中……现在说一句英文，然后调用 stopAndTranscribe(key)";
-    },
-    async stopAndTranscribe(apiKey, expected, baseUrl = DEFAULT_BASE_URL, model = DEFAULT_ASR_MODEL, transport = "dashscope-native") {
-      if (!current) throw new Error("请先调用 start()");
-      const recorder = current;
-      current = void 0;
-      const recording = await recorder.stop();
-      const wav = encodeWav(recording.samples, recording.sampleRate);
-      const dataUri = bytesToDataUri(new Uint8Array(wav), "audio/wav");
-      const startedAt = Date.now();
-      const text = await transcribeAudio({ baseUrl, apiKey, model, transport }, dataUri);
-      const result = {
-        seconds: Math.round(recording.durationMs / 100) / 10,
-        payloadKB: Math.round(dataUri.length / 1024),
-        elapsedMs: Date.now() - startedAt,
-        text
-      };
-      if (expected) {
-        const stats = diffDictation(expected, text).stats;
-        result.diff = stats;
-        result.score = scoreAttempt(expected, stats, recording.durationMs);
-      }
-      return result;
-    }
-  };
-}
-
 // src/recorder-modal.ts
-var import_obsidian2 = require("obsidian");
 var RecorderModal = class extends import_obsidian2.Modal {
   plugin;
   recorder;
@@ -1239,7 +1207,7 @@ ${ids.join("\n")}`;
   }
   async runWithDiagnostics(button, idleLabel, busyLabel, action) {
     this.diagnosticLines = [];
-    this.appendDiagnostic(`构建时间：${"2026-10-04T04:54:40.052Z"}`);
+    this.appendDiagnostic(`构建时间：${"2026-10-04T04:58:22.535Z"}`);
     this.appendDiagnostic(`时间：${(/* @__PURE__ */ new Date()).toLocaleString()}`);
     this.appendDiagnostic(`协议：${this.plugin.settings.transport}`);
     this.appendDiagnostic(`模型：${this.plugin.settings.asrModel}`);
@@ -1337,7 +1305,6 @@ var EchoReadPlugin = class extends import_obsidian5.Plugin {
       name: "打开录音工作台",
       callback: () => this.openRecorder()
     });
-    installDebugHook();
     console.log("Echo Read loaded");
   }
   openRecorder() {
