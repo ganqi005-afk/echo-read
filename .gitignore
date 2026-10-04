@@ -2,6 +2,9 @@ node_modules/
 *.log
 .DS_Store
 
+# 本机部署目标（含个人路径，不进版本历史）
+.deploy-target
+
 # 插件数据（缓存不是数据，不进版本历史）
 _lingo/audio/
 _lingo/recordings/

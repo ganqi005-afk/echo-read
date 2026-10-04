@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "node esbuild.config.mjs",
     "build": "node esbuild.config.mjs production",
+    "deploy": "node esbuild.config.mjs production && node scripts/deploy.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
