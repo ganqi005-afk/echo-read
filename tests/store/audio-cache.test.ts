@@ -26,34 +26,23 @@ describe("toHex", () => {
 });
 
 describe("buildCacheKey", () => {
-  const base = { text: "Hello.", voice: "v1", model: "m1", format: "mp3" };
-
+  // 缓存键 = 音色签名 + 文本。签名内部包含模型/音色/格式/语速等，
+  // 那些维度的独立性由 tts-request.test.ts 的 voiceSignature 测试覆盖。
   it("is stable for identical inputs", () => {
-    expect(buildCacheKey(base)).toBe(buildCacheKey({ ...base }));
+    expect(buildCacheKey("sig", "Hello.")).toBe(buildCacheKey("sig", "Hello."));
   });
 
-  // 设计文档 12.3 的核心：换任何一项都必须换缓存键，
-  // 否则会命中旧音频，出现"换了音色但声音没变"这种极难排查的问题
   it("changes when the text changes", () => {
-    expect(buildCacheKey({ ...base, text: "Bye." })).not.toBe(buildCacheKey(base));
+    expect(buildCacheKey("sig", "Bye.")).not.toBe(buildCacheKey("sig", "Hello."));
   });
 
-  it("changes when the voice changes", () => {
-    expect(buildCacheKey({ ...base, voice: "v2" })).not.toBe(buildCacheKey(base));
+  it("changes when the voice signature changes", () => {
+    expect(buildCacheKey("sig2", "Hello.")).not.toBe(buildCacheKey("sig", "Hello."));
   });
 
-  it("changes when the model changes", () => {
-    expect(buildCacheKey({ ...base, model: "m2" })).not.toBe(buildCacheKey(base));
-  });
-
-  it("changes when the format changes", () => {
-    expect(buildCacheKey({ ...base, format: "wav" })).not.toBe(buildCacheKey(base));
-  });
-
-  it("does not collide when fields shift across the separator", () => {
-    const a = buildCacheKey({ text: "b", voice: "a", model: "m", format: "f" });
-    const b = buildCacheKey({ text: "a", voice: "b", model: "m", format: "f" });
-    expect(a).not.toBe(b);
+  // 用 \u0000 作分隔符：普通文本里不会出现它，因此不会把两个字段拼出歧义
+  it("uses a separator that cannot appear in normal text", () => {
+    expect(buildCacheKey("a", "b")).toBe(`a\u0000b`);
   });
 });
 

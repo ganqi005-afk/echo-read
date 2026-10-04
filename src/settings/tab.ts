@@ -13,9 +13,11 @@ import {
 } from "../speech/client";
 import { describeProbeOutcome } from "../speech/key-probe";
 import { guessMimeType, previewTtsBody, synthesizeSpeech } from "../speech/tts-client";
+import { voiceSignature } from "../speech/tts-request";
 import { loadVoices } from "../speech/tts-system";
 import {
   audioCachePath,
+  cacheSynthesizedAudio,
   clearAudioCache,
   formatBytes,
   listAudioCache,
@@ -24,7 +26,6 @@ import {
   readCachedAudio,
   recentIndexEntries,
   summarizeCache,
-  writeCachedAudio,
 } from "../store/audio-cache";
 import { deleteTestSample, hasTestSample, loadTestSample } from "../store/sample";
 import {
@@ -43,6 +44,7 @@ import {
   SPEECH_PRESETS,
   TEXT_PRESETS,
   findPreset,
+  toTtsVoice,
   type Preset,
   type TtsMode,
 } from "./types";
@@ -272,6 +274,99 @@ export class EchoReadSettingTab extends PluginSettingTab {
         text.setValue(this.plugin.settings.ttsVoice).onChange(async (value) => {
           await this.plugin.updateSettings({ ttsVoice: value.trim() });
         }),
+      );
+
+    containerEl.createEl("p", {
+      cls: "setting-item-description",
+      text:
+        "⚠ 改动下面任何一项，缓存键都会变化 —— 同一句话会重新合成一次并重新计费。" +
+        "全部保持默认时，缓存键与旧版本一致，已有缓存不受影响。",
+    });
+
+    new Setting(containerEl)
+      .setName("语速")
+      .setDesc("取值范围 0.5–2.0，默认 1。放慢能帮助听清连读。")
+      .addSlider((slider) =>
+        slider
+          .setLimits(0.5, 2, 0.05)
+          .setValue(this.plugin.settings.ttsRate)
+          .setDynamicTooltip()
+          .onChange(async (value) => {
+            await this.plugin.updateSettings({ ttsRate: value });
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("音量")
+      .setDesc("取值范围 0–100，默认 50。")
+      .addSlider((slider) =>
+        slider
+          .setLimits(0, 100, 5)
+          .setValue(this.plugin.settings.ttsVolume)
+          .setDynamicTooltip()
+          .onChange(async (value) => {
+            await this.plugin.updateSettings({ ttsVolume: value });
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("音调")
+      .setDesc("取值范围 0.5–2.0，默认 1。")
+      .addSlider((slider) =>
+        slider
+          .setLimits(0.5, 2, 0.05)
+          .setValue(this.plugin.settings.ttsPitch)
+          .setDynamicTooltip()
+          .onChange(async (value) => {
+            await this.plugin.updateSettings({ ttsPitch: value });
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("音频格式")
+      .setDesc("默认 mp3。wav 无损但体积大，opus 体积最小。")
+      .addDropdown((dropdown) => {
+        for (const format of ["mp3", "wav", "opus", "pcm"]) {
+          dropdown.addOption(format, format);
+        }
+        dropdown.setValue(this.plugin.settings.ttsFormat).onChange(async (value) => {
+          await this.plugin.updateSettings({ ttsFormat: value });
+        });
+      });
+
+    new Setting(containerEl)
+      .setName("采样率")
+      .setDesc("常用 16000 / 24000 / 48000。改这个也会产生新的缓存。")
+      .addText((text) =>
+        text.setValue(String(this.plugin.settings.ttsSampleRate)).onChange(async (value) => {
+          const rate = Number(value);
+          if (!Number.isFinite(rate) || rate <= 0) return;
+          await this.plugin.updateSettings({ ttsSampleRate: Math.round(rate) });
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName("语种提示")
+      .setDesc("如 en。留空则不传，由模型自行判断。")
+      .addText((text) =>
+        text.setPlaceholder("en").setValue(this.plugin.settings.ttsLanguage).onChange(async (value) => {
+          await this.plugin.updateSettings({ ttsLanguage: value.trim() });
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName("指令控制")
+      .setDesc(
+        "用自然语言描述方言、情感或角色，例如「用缓慢、清晰的教学语气朗读」。留空则不传。" +
+          "并非所有模型都支持。",
+      )
+      .addText((text) =>
+        text
+          .setPlaceholder("例如：用缓慢清晰的语气朗读")
+          .setValue(this.plugin.settings.ttsInstruction)
+          .onChange(async (value) => {
+            await this.plugin.updateSettings({ ttsInstruction: value });
+          }),
       );
 
     new Setting(containerEl)
@@ -725,37 +820,37 @@ export class EchoReadSettingTab extends PluginSettingTab {
   private async auditionCloudVoice(): Promise<string> {
     const apiKey = this.requireKey(this.plugin.settings.ttsKeyId, "语音合成");
 
-    const { ttsBaseUrl, ttsModel, ttsVoice } = this.plugin.settings;
+    const { ttsBaseUrl } = this.plugin.settings;
     if (!ttsBaseUrl) throw new Error("尚未填写接入地址。");
-    if (!ttsVoice) throw new Error("尚未填写音色 —— 合成接口的 voice 是必填项。");
+    if (!this.plugin.settings.ttsVoice) {
+      throw new Error("尚未填写音色 —— 合成接口的 voice 是必填项。");
+    }
 
     const mismatch = describeKeyEndpointMismatch(apiKey, ttsBaseUrl);
     if (mismatch) this.appendDiagnostic(`⚠ ${mismatch}`);
 
-    const format = "mp3";
     const text = "The plan is ready.";
+    const voice = toTtsVoice(this.plugin.settings);
+    const signature = voiceSignature(voice);
 
     this.appendDiagnostic(`合成地址：${ttsBaseUrl}/api/v1/services/audio/tts/SpeechSynthesizer`);
-    this.appendDiagnostic(
-      `请求体预览：\n${previewTtsBody(
-        { baseUrl: ttsBaseUrl, apiKey, model: ttsModel, voice: ttsVoice, format },
-        text,
-      )}`,
-    );
+    this.appendDiagnostic(`请求体预览：\n${previewTtsBody(voice, text)}`);
 
-    const path = await audioCachePath(text, ttsVoice, ttsModel, format);
+    const path = await audioCachePath(signature, text, voice.format);
     let bytes = await readCachedAudio(this.app, path);
     const cached = bytes !== undefined;
     if (!bytes) {
-      const result = await synthesizeSpeech(
-        { baseUrl: ttsBaseUrl, apiKey, model: ttsModel, voice: ttsVoice, format },
-        text,
-      );
+      const result = await synthesizeSpeech({ baseUrl: ttsBaseUrl, apiKey, voice }, text);
       bytes = result.bytes;
-      await writeCachedAudio(this.app, path, bytes);
+      await cacheSynthesizedAudio(
+        this.app,
+        signature,
+        { text, format: voice.format, voice: voice.voice, model: voice.model },
+        bytes,
+      );
     }
 
-    await playAudioBytes(bytes, guessMimeType(format));
+    await playAudioBytes(bytes, guessMimeType(voice.format));
     return [
       `待合成文本：${text}`,
       `音频字节：${bytes.byteLength} B`,

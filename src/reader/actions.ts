@@ -1,7 +1,9 @@
 import { App } from "obsidian";
 import type EchoReadPlugin from "../main";
 import { playAudioBytes } from "../audio/playback";
+import { toTtsVoice } from "../settings/types";
 import { guessMimeType, synthesizeSpeech } from "../speech/tts-client";
+import { voiceSignature } from "../speech/tts-request";
 import { speak } from "../speech/tts-system";
 import {
   audioCachePath,
@@ -29,12 +31,13 @@ export async function speakSentence(
     return "system";
   }
 
-  const format = "mp3";
-  const path = await audioCachePath(text, settings.ttsVoice, settings.ttsModel, format);
+  const voice = toTtsVoice(settings);
+  const signature = voiceSignature(voice);
+  const path = await audioCachePath(signature, text, voice.format);
 
   const cached = await readCachedAudio(app, path);
   if (cached) {
-    await playAudioBytes(cached, guessMimeType(format));
+    await playAudioBytes(cached, guessMimeType(voice.format));
     return "cache";
   }
 
@@ -42,24 +45,16 @@ export async function speakSentence(
   if (!settings.ttsKeyId || !apiKey) {
     throw new Error("云端合成尚未绑定 Key 或 Key 为空，请到插件设置里处理。");
   }
-  if (!settings.ttsVoice) {
+  if (!voice.voice) {
     throw new Error("云端合成缺少音色，请到插件设置里填写。");
   }
 
-  const result = await synthesizeSpeech(
-    {
-      baseUrl: settings.ttsBaseUrl,
-      apiKey,
-      model: settings.ttsModel,
-      voice: settings.ttsVoice,
-      format,
-    },
-    text,
-  );
+  const result = await synthesizeSpeech({ baseUrl: settings.ttsBaseUrl, apiKey, voice }, text);
 
   await cacheSynthesizedAudio(
     app,
-    { text, voice: settings.ttsVoice, model: settings.ttsModel, format },
+    signature,
+    { text, format: voice.format, voice: voice.voice, model: voice.model },
     result.bytes,
   );
   await playAudioBytes(result.bytes, result.mimeType);

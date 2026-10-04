@@ -13,13 +13,8 @@ export function toHex(bytes: ArrayBuffer): string {
     .join("");
 }
 
-export function buildCacheKey(parts: {
-  text: string;
-  voice: string;
-  model: string;
-  format: string;
-}): string {
-  return [parts.model, parts.voice, parts.format, parts.text].join("\u0000");
+export function buildCacheKey(signature: string, text: string): string {
+  return [signature, text].join("\u0000");
 }
 
 export async function hashCacheKey(key: string): Promise<string> {
@@ -28,12 +23,11 @@ export async function hashCacheKey(key: string): Promise<string> {
 }
 
 export async function audioCachePath(
+  signature: string,
   text: string,
-  voice: string,
-  model: string,
   format: string,
 ): Promise<string> {
-  const hash = await hashCacheKey(buildCacheKey({ text, voice, model, format }));
+  const hash = await hashCacheKey(buildCacheKey(signature, text));
   return `${AUDIO_CACHE_DIR}/${hash}.${format}`;
 }
 
@@ -251,10 +245,11 @@ export async function writeAudioIndex(app: App, index: AudioIndex): Promise<void
  */
 export async function cacheSynthesizedAudio(
   app: App,
-  parts: { text: string; voice: string; model: string; format: string },
+  signature: string,
+  parts: { text: string; format: string; voice: string; model: string },
   bytes: ArrayBuffer,
 ): Promise<string> {
-  const hash = await hashCacheKey(buildCacheKey(parts));
+  const hash = await hashCacheKey(buildCacheKey(signature, parts.text));
   const file = `${AUDIO_CACHE_DIR}/${hash}.${parts.format}`;
 
   await writeCachedAudio(app, file, bytes);

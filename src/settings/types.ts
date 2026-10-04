@@ -1,4 +1,5 @@
 import { DEFAULT_ASR_MODEL, DEFAULT_BASE_URL, type Transport } from "../speech/client";
+import { DEFAULT_TTS_VOICE, type TtsVoice } from "../speech/tts-request";
 
 export type TtsMode = "system" | "cloud";
 
@@ -93,6 +94,19 @@ export interface EchoReadSettings {
   ttsBaseUrl: string;
   ttsModel: string;
   ttsVoice: string;
+  /** 音频编码格式：mp3 / wav / opus / pcm。 */
+  ttsFormat: string;
+  ttsSampleRate: number;
+  /** 语速，范围 [0.5, 2.0]，默认 1。 */
+  ttsRate: number;
+  /** 音量，范围 [0, 100]，默认 50。 */
+  ttsVolume: number;
+  /** 音调，范围 [0.5, 2.0]，默认 1。 */
+  ttsPitch: number;
+  /** 指令控制：描述方言、情感或角色。留空则不传。 */
+  ttsInstruction: string;
+  /** 语种提示，如 en。留空则不传。 */
+  ttsLanguage: string;
 
   /** 文本能力（弱项解释、卡片选词）：走 OpenAI 兼容协议。 */
   llmPresetId: string;
@@ -128,6 +142,15 @@ export const DEFAULT_SETTINGS: EchoReadSettings = {
   ttsBaseUrl: DEFAULT_TTS_BASE_URL,
   ttsModel: DEFAULT_CLOUD_TTS_MODEL,
   ttsVoice: DEFAULT_CLOUD_TTS_VOICE,
+  ttsFormat: DEFAULT_TTS_VOICE.format,
+  ttsSampleRate: DEFAULT_TTS_VOICE.sampleRate,
+  ttsRate: DEFAULT_TTS_VOICE.rate,
+  ttsVolume: DEFAULT_TTS_VOICE.volume,
+  ttsPitch: DEFAULT_TTS_VOICE.pitch,
+  ttsInstruction: "",
+  // 默认不传语种提示：传了会进入缓存键，使已有缓存失配。
+  // 需要时由用户显式开启。
+  ttsLanguage: "",
 
   llmPresetId: "qianwen-token-plan",
   llmKeyId: "",
@@ -154,5 +177,30 @@ export function mergeSettings(
   if (!findPreset(merged.ttsPresetId)) merged.ttsPresetId = DEFAULT_SETTINGS.ttsPresetId;
   if (!findPreset(merged.llmPresetId)) merged.llmPresetId = DEFAULT_SETTINGS.llmPresetId;
 
+  // 数值参数非法时会直接导致请求被服务端拒绝，这里兜住明显越界的值
+  merged.ttsRate = clamp(merged.ttsRate, 0.5, 2, DEFAULT_TTS_VOICE.rate);
+  merged.ttsPitch = clamp(merged.ttsPitch, 0.5, 2, DEFAULT_TTS_VOICE.pitch);
+  merged.ttsVolume = Math.round(clamp(merged.ttsVolume, 0, 100, DEFAULT_TTS_VOICE.volume));
+
   return merged;
+}
+
+function clamp(value: number, min: number, max: number, fallback: number): number {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(min, Math.min(max, value));
+}
+
+/** 把设置里的字段组装成一次合成所需的音色参数。 */
+export function toTtsVoice(settings: EchoReadSettings): TtsVoice {
+  return {
+    model: settings.ttsModel,
+    voice: settings.ttsVoice,
+    format: settings.ttsFormat,
+    sampleRate: settings.ttsSampleRate,
+    rate: settings.ttsRate,
+    volume: settings.ttsVolume,
+    pitch: settings.ttsPitch,
+    instruction: settings.ttsInstruction,
+    language: settings.ttsLanguage,
+  };
 }

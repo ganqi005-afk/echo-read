@@ -854,20 +854,34 @@ function stopSpeaking() {
   if (typeof speechSynthesis !== "undefined") speechSynthesis.cancel();
 }
 
-// src/speech/tts-client.ts
-var import_obsidian3 = require("obsidian");
-
 // src/speech/tts-request.ts
-function buildTtsBody(options) {
-  return {
-    model: options.model,
-    input: {
-      text: options.text,
-      voice: options.voice,
-      format: options.format ?? "mp3",
-      sample_rate: options.sampleRate ?? 24e3
-    }
+var DEFAULT_RATE = 1;
+var DEFAULT_VOLUME = 50;
+var DEFAULT_PITCH = 1;
+var DEFAULT_TTS_VOICE = {
+  model: "qwen-audio-3.0-tts-flash",
+  voice: "longanhuan_v3.6",
+  format: "mp3",
+  sampleRate: 24e3,
+  rate: DEFAULT_RATE,
+  volume: DEFAULT_VOLUME,
+  pitch: DEFAULT_PITCH,
+  instruction: "",
+  language: ""
+};
+function buildTtsBody(voice, text) {
+  const input = {
+    text,
+    voice: voice.voice,
+    format: voice.format,
+    sample_rate: voice.sampleRate,
+    rate: voice.rate,
+    volume: voice.volume,
+    pitch: voice.pitch
   };
+  if (voice.instruction.trim() !== "") input.instruction = voice.instruction.trim();
+  if (voice.language.trim() !== "") input.language = voice.language.trim();
+  return { model: voice.model, input };
 }
 function extractAudioUrl(payload) {
   if (!payload || typeof payload !== "object") {
@@ -886,6 +900,18 @@ function extractAudioUrl(payload) {
     expiresAt: typeof node.expires_at === "number" ? node.expires_at : void 0
   };
 }
+function voiceSignature(voice) {
+  const parts = [voice.model, voice.voice, voice.format];
+  if (voice.sampleRate !== DEFAULT_TTS_VOICE.sampleRate) {
+    parts.push(`sr=${voice.sampleRate}`);
+  }
+  if (voice.rate !== DEFAULT_RATE) parts.push(`rate=${voice.rate}`);
+  if (voice.volume !== DEFAULT_VOLUME) parts.push(`vol=${voice.volume}`);
+  if (voice.pitch !== DEFAULT_PITCH) parts.push(`pitch=${voice.pitch}`);
+  if (voice.instruction.trim() !== "") parts.push(`instr=${voice.instruction.trim()}`);
+  if (voice.language.trim() !== "") parts.push(`lang=${voice.language.trim()}`);
+  return parts.join("\0");
+}
 function safeStringify3(value) {
   try {
     return JSON.stringify(value).slice(0, 500);
@@ -894,7 +920,122 @@ function safeStringify3(value) {
   }
 }
 
+// src/settings/types.ts
+var SPEECH_PRESETS = [
+  {
+    id: "qianwen",
+    name: "千问AI平台",
+    transport: "dashscope-native",
+    baseUrl: DEFAULT_BASE_URL,
+    note: "已验证可用。识别与合成共用这个地址，但可以绑定不同的 Key。"
+  },
+  {
+    id: "bailian",
+    name: "阿里云百炼（直连）",
+    transport: "dashscope-native",
+    baseUrl: "https://dashscope.aliyuncs.com",
+    note: "同协议的另一家平台，换账号时用。"
+  },
+  {
+    id: "custom-speech",
+    name: "自定义",
+    transport: "dashscope-native",
+    baseUrl: "",
+    note: "手填 DashScope 原生协议的接入地址。"
+  }
+];
+var TEXT_PRESETS = [
+  {
+    id: "qianwen-token-plan",
+    name: "千问AI平台 · Token Plan",
+    transport: "openai-compatible",
+    baseUrl: "https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1",
+    note: "用 sk-sp- 开头的 Token Plan Key。语音能力在此端点上不可用，仅用于文本。"
+  },
+  {
+    id: "deepseek",
+    name: "DeepSeek",
+    transport: "openai-compatible",
+    baseUrl: "https://api.deepseek.com/v1",
+    note: "用 DeepSeek 的普通 Key。"
+  },
+  {
+    id: "custom-text",
+    name: "自定义（OpenAI 兼容）",
+    transport: "openai-compatible",
+    baseUrl: "",
+    note: "任何 OpenAI 兼容端点。"
+  }
+];
+function findPreset(id) {
+  return [...SPEECH_PRESETS, ...TEXT_PRESETS].find((preset) => preset.id === id);
+}
+var DEFAULT_TTS_BASE_URL = DEFAULT_BASE_URL;
+var DEFAULT_CLOUD_TTS_MODEL = "qwen-audio-3.0-tts-flash";
+var DEFAULT_CLOUD_TTS_VOICE = "longanhuan_v3.6";
+var DEFAULT_SETTINGS = {
+  asrPresetId: "qianwen",
+  asrKeyId: "",
+  asrTransport: "dashscope-native",
+  asrBaseUrl: DEFAULT_BASE_URL,
+  asrModel: DEFAULT_ASR_MODEL,
+  ttsMode: "system",
+  ttsPresetId: "qianwen",
+  ttsKeyId: "",
+  ttsBaseUrl: DEFAULT_TTS_BASE_URL,
+  ttsModel: DEFAULT_CLOUD_TTS_MODEL,
+  ttsVoice: DEFAULT_CLOUD_TTS_VOICE,
+  ttsFormat: DEFAULT_TTS_VOICE.format,
+  ttsSampleRate: DEFAULT_TTS_VOICE.sampleRate,
+  ttsRate: DEFAULT_TTS_VOICE.rate,
+  ttsVolume: DEFAULT_TTS_VOICE.volume,
+  ttsPitch: DEFAULT_TTS_VOICE.pitch,
+  ttsInstruction: "",
+  // 默认不传语种提示：传了会进入缓存键，使已有缓存失配。
+  // 需要时由用户显式开启。
+  ttsLanguage: "",
+  llmPresetId: "qianwen-token-plan",
+  llmKeyId: "",
+  llmTransport: "openai-compatible",
+  llmBaseUrl: TEXT_PRESETS[0].baseUrl,
+  llmModel: "qwen3.8-flash",
+  voiceURI: "",
+  speechRate: 1,
+  speakOnClick: true,
+  audioCacheMaxAgeDays: 30,
+  audioCacheMaxBytes: 200 * 1024 * 1024
+};
+function mergeSettings(stored) {
+  const merged = { ...DEFAULT_SETTINGS, ...stored ?? {} };
+  if (merged.speechRate <= 0) merged.speechRate = DEFAULT_SETTINGS.speechRate;
+  if (!findPreset(merged.asrPresetId)) merged.asrPresetId = DEFAULT_SETTINGS.asrPresetId;
+  if (!findPreset(merged.ttsPresetId)) merged.ttsPresetId = DEFAULT_SETTINGS.ttsPresetId;
+  if (!findPreset(merged.llmPresetId)) merged.llmPresetId = DEFAULT_SETTINGS.llmPresetId;
+  merged.ttsRate = clamp(merged.ttsRate, 0.5, 2, DEFAULT_TTS_VOICE.rate);
+  merged.ttsPitch = clamp(merged.ttsPitch, 0.5, 2, DEFAULT_TTS_VOICE.pitch);
+  merged.ttsVolume = Math.round(clamp(merged.ttsVolume, 0, 100, DEFAULT_TTS_VOICE.volume));
+  return merged;
+}
+function clamp(value, min, max, fallback) {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(min, Math.min(max, value));
+}
+function toTtsVoice(settings) {
+  return {
+    model: settings.ttsModel,
+    voice: settings.ttsVoice,
+    format: settings.ttsFormat,
+    sampleRate: settings.ttsSampleRate,
+    rate: settings.ttsRate,
+    volume: settings.ttsVolume,
+    pitch: settings.ttsPitch,
+    instruction: settings.ttsInstruction,
+    language: settings.ttsLanguage
+  };
+}
+
 // src/speech/tts-client.ts
+var import_obsidian3 = require("obsidian");
 var TTS_HTTP_PATH = "/api/v1/services/audio/tts/SpeechSynthesizer";
 function guessMimeType(format) {
   switch (format.toLowerCase()) {
@@ -902,29 +1043,17 @@ function guessMimeType(format) {
       return "audio/mpeg";
     case "wav":
       return "audio/wav";
+    case "opus":
+      return "audio/opus";
     case "pcm":
       return "audio/L16";
     default:
       return "application/octet-stream";
   }
 }
-function previewTtsBody(options, text) {
-  return JSON.stringify(
-    buildTtsBody({
-      model: options.model,
-      text,
-      voice: options.voice,
-      format: options.format ?? "mp3",
-      sampleRate: options.sampleRate ?? 24e3
-    }),
-    null,
-    2
-  );
-}
 async function synthesizeSpeech(options, text) {
   if (!options.apiKey) throw new Error("尚未配置 API Key。");
-  if (!options.voice) throw new Error("尚未配置音色 —— 合成接口的 voice 是必填项。");
-  const format = options.format ?? "mp3";
+  if (!options.voice.voice) throw new Error("尚未配置音色 —— 合成接口的 voice 是必填项。");
   const url = `${options.baseUrl.replace(/\/+$/, "")}${TTS_HTTP_PATH}`;
   const response = await (0, import_obsidian3.requestUrl)({
     url,
@@ -933,24 +1062,12 @@ async function synthesizeSpeech(options, text) {
       Authorization: `Bearer ${options.apiKey}`,
       "Content-Type": "application/json"
     },
-    body: JSON.stringify(
-      buildTtsBody({
-        model: options.model,
-        text,
-        voice: options.voice,
-        format,
-        sampleRate: options.sampleRate ?? 24e3
-      })
-    ),
+    body: JSON.stringify(buildTtsBody(options.voice, text)),
     throw: false
   });
   if (response.status < 200 || response.status >= 300) {
     const body = response.text ?? "";
-    console.error("[Echo Read] 语音合成请求失败", {
-      status: response.status,
-      url,
-      body
-    });
+    console.error("[Echo Read] 语音合成请求失败", { status: response.status, url, body });
     throw new Error(`语音合成失败（HTTP ${response.status}）：${truncate2(body, 600)}`);
   }
   const audio = extractAudioUrl(response.json);
@@ -960,9 +1077,12 @@ async function synthesizeSpeech(options, text) {
   }
   return {
     bytes: download.arrayBuffer,
-    mimeType: guessMimeType(format),
+    mimeType: guessMimeType(options.voice.format),
     expiresAt: audio.expiresAt
   };
+}
+function previewTtsBody(voice, text) {
+  return JSON.stringify(buildTtsBody(voice, text), null, 2);
 }
 function truncate2(text, limit) {
   return text.length > limit ? `${text.slice(0, limit)}…` : text;
@@ -973,15 +1093,15 @@ var AUDIO_CACHE_DIR = "_lingo/audio";
 function toHex(bytes) {
   return Array.from(new Uint8Array(bytes)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
-function buildCacheKey(parts) {
-  return [parts.model, parts.voice, parts.format, parts.text].join("\0");
+function buildCacheKey(signature, text) {
+  return [signature, text].join("\0");
 }
 async function hashCacheKey(key) {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key));
   return toHex(digest).slice(0, 32);
 }
-async function audioCachePath(text, voice, model, format) {
-  const hash = await hashCacheKey(buildCacheKey({ text, voice, model, format }));
+async function audioCachePath(signature, text, format) {
+  const hash = await hashCacheKey(buildCacheKey(signature, text));
   return `${AUDIO_CACHE_DIR}/${hash}.${format}`;
 }
 async function readCachedAudio(app, path) {
@@ -1105,8 +1225,8 @@ async function writeAudioIndex(app, index) {
   if (!await adapter.exists(AUDIO_CACHE_DIR)) await adapter.mkdir(AUDIO_CACHE_DIR);
   await adapter.write(AUDIO_INDEX_PATH, JSON.stringify(index, null, 2));
 }
-async function cacheSynthesizedAudio(app, parts, bytes) {
-  const hash = await hashCacheKey(buildCacheKey(parts));
+async function cacheSynthesizedAudio(app, signature, parts, bytes) {
+  const hash = await hashCacheKey(buildCacheKey(signature, parts.text));
   const file = `${AUDIO_CACHE_DIR}/${hash}.${parts.format}`;
   await writeCachedAudio(app, file, bytes);
   const index = await readAudioIndex(app);
@@ -1124,33 +1244,26 @@ async function speakSentence(app, plugin, text) {
     await speak(text, { voiceURI: settings.voiceURI, rate: settings.speechRate });
     return "system";
   }
-  const format = "mp3";
-  const path = await audioCachePath(text, settings.ttsVoice, settings.ttsModel, format);
+  const voice = toTtsVoice(settings);
+  const signature = voiceSignature(voice);
+  const path = await audioCachePath(signature, text, voice.format);
   const cached = await readCachedAudio(app, path);
   if (cached) {
-    await playAudioBytes(cached, guessMimeType(format));
+    await playAudioBytes(cached, guessMimeType(voice.format));
     return "cache";
   }
   const apiKey = plugin.apiKeys[settings.ttsKeyId];
   if (!settings.ttsKeyId || !apiKey) {
     throw new Error("云端合成尚未绑定 Key 或 Key 为空，请到插件设置里处理。");
   }
-  if (!settings.ttsVoice) {
+  if (!voice.voice) {
     throw new Error("云端合成缺少音色，请到插件设置里填写。");
   }
-  const result = await synthesizeSpeech(
-    {
-      baseUrl: settings.ttsBaseUrl,
-      apiKey,
-      model: settings.ttsModel,
-      voice: settings.ttsVoice,
-      format
-    },
-    text
-  );
+  const result = await synthesizeSpeech({ baseUrl: settings.ttsBaseUrl, apiKey, voice }, text);
   await cacheSynthesizedAudio(
     app,
-    { text, voice: settings.ttsVoice, model: settings.ttsModel, format },
+    signature,
+    { text, format: voice.format, voice: voice.voice, model: voice.model },
     result.bytes
   );
   await playAudioBytes(result.bytes, result.mimeType);
@@ -1836,93 +1949,6 @@ async function loadKeyValues(app) {
 
 // src/settings/tab.ts
 var import_obsidian5 = require("obsidian");
-
-// src/settings/types.ts
-var SPEECH_PRESETS = [
-  {
-    id: "qianwen",
-    name: "千问AI平台",
-    transport: "dashscope-native",
-    baseUrl: DEFAULT_BASE_URL,
-    note: "已验证可用。识别与合成共用这个地址，但可以绑定不同的 Key。"
-  },
-  {
-    id: "bailian",
-    name: "阿里云百炼（直连）",
-    transport: "dashscope-native",
-    baseUrl: "https://dashscope.aliyuncs.com",
-    note: "同协议的另一家平台，换账号时用。"
-  },
-  {
-    id: "custom-speech",
-    name: "自定义",
-    transport: "dashscope-native",
-    baseUrl: "",
-    note: "手填 DashScope 原生协议的接入地址。"
-  }
-];
-var TEXT_PRESETS = [
-  {
-    id: "qianwen-token-plan",
-    name: "千问AI平台 · Token Plan",
-    transport: "openai-compatible",
-    baseUrl: "https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1",
-    note: "用 sk-sp- 开头的 Token Plan Key。语音能力在此端点上不可用，仅用于文本。"
-  },
-  {
-    id: "deepseek",
-    name: "DeepSeek",
-    transport: "openai-compatible",
-    baseUrl: "https://api.deepseek.com/v1",
-    note: "用 DeepSeek 的普通 Key。"
-  },
-  {
-    id: "custom-text",
-    name: "自定义（OpenAI 兼容）",
-    transport: "openai-compatible",
-    baseUrl: "",
-    note: "任何 OpenAI 兼容端点。"
-  }
-];
-function findPreset(id) {
-  return [...SPEECH_PRESETS, ...TEXT_PRESETS].find((preset) => preset.id === id);
-}
-var DEFAULT_TTS_BASE_URL = DEFAULT_BASE_URL;
-var DEFAULT_CLOUD_TTS_MODEL = "qwen-audio-3.0-tts-flash";
-var DEFAULT_CLOUD_TTS_VOICE = "longanhuan_v3.6";
-var DEFAULT_SETTINGS = {
-  asrPresetId: "qianwen",
-  asrKeyId: "",
-  asrTransport: "dashscope-native",
-  asrBaseUrl: DEFAULT_BASE_URL,
-  asrModel: DEFAULT_ASR_MODEL,
-  ttsMode: "system",
-  ttsPresetId: "qianwen",
-  ttsKeyId: "",
-  ttsBaseUrl: DEFAULT_TTS_BASE_URL,
-  ttsModel: DEFAULT_CLOUD_TTS_MODEL,
-  ttsVoice: DEFAULT_CLOUD_TTS_VOICE,
-  llmPresetId: "qianwen-token-plan",
-  llmKeyId: "",
-  llmTransport: "openai-compatible",
-  llmBaseUrl: TEXT_PRESETS[0].baseUrl,
-  llmModel: "qwen3.8-flash",
-  voiceURI: "",
-  speechRate: 1,
-  speakOnClick: true,
-  audioCacheMaxAgeDays: 30,
-  audioCacheMaxBytes: 200 * 1024 * 1024
-};
-function mergeSettings(stored) {
-  const merged = { ...DEFAULT_SETTINGS, ...stored ?? {} };
-  if (merged.speechRate <= 0) merged.speechRate = DEFAULT_SETTINGS.speechRate;
-  if (!findPreset(merged.asrPresetId)) merged.asrPresetId = DEFAULT_SETTINGS.asrPresetId;
-  if (!findPreset(merged.ttsPresetId)) merged.ttsPresetId = DEFAULT_SETTINGS.ttsPresetId;
-  if (!findPreset(merged.llmPresetId)) merged.llmPresetId = DEFAULT_SETTINGS.llmPresetId;
-  return merged;
-}
-
-// src/settings/tab.ts
 var TRANSPORT_LABELS = {
   "dashscope-native": "DashScope 原生",
   "openai-compatible": "OpenAI 兼容"
@@ -2093,6 +2119,52 @@ var EchoReadSettingTab = class extends import_obsidian5.PluginSettingTab {
     new import_obsidian5.Setting(containerEl).setName("音色").setDesc("必填，接口没有默认值。文档示例：longanhuan_v3.6 / longxiaochun。").addText(
       (text) => text.setValue(this.plugin.settings.ttsVoice).onChange(async (value) => {
         await this.plugin.updateSettings({ ttsVoice: value.trim() });
+      })
+    );
+    containerEl.createEl("p", {
+      cls: "setting-item-description",
+      text: "⚠ 改动下面任何一项，缓存键都会变化 —— 同一句话会重新合成一次并重新计费。全部保持默认时，缓存键与旧版本一致，已有缓存不受影响。"
+    });
+    new import_obsidian5.Setting(containerEl).setName("语速").setDesc("取值范围 0.5–2.0，默认 1。放慢能帮助听清连读。").addSlider(
+      (slider) => slider.setLimits(0.5, 2, 0.05).setValue(this.plugin.settings.ttsRate).setDynamicTooltip().onChange(async (value) => {
+        await this.plugin.updateSettings({ ttsRate: value });
+      })
+    );
+    new import_obsidian5.Setting(containerEl).setName("音量").setDesc("取值范围 0–100，默认 50。").addSlider(
+      (slider) => slider.setLimits(0, 100, 5).setValue(this.plugin.settings.ttsVolume).setDynamicTooltip().onChange(async (value) => {
+        await this.plugin.updateSettings({ ttsVolume: value });
+      })
+    );
+    new import_obsidian5.Setting(containerEl).setName("音调").setDesc("取值范围 0.5–2.0，默认 1。").addSlider(
+      (slider) => slider.setLimits(0.5, 2, 0.05).setValue(this.plugin.settings.ttsPitch).setDynamicTooltip().onChange(async (value) => {
+        await this.plugin.updateSettings({ ttsPitch: value });
+      })
+    );
+    new import_obsidian5.Setting(containerEl).setName("音频格式").setDesc("默认 mp3。wav 无损但体积大，opus 体积最小。").addDropdown((dropdown) => {
+      for (const format of ["mp3", "wav", "opus", "pcm"]) {
+        dropdown.addOption(format, format);
+      }
+      dropdown.setValue(this.plugin.settings.ttsFormat).onChange(async (value) => {
+        await this.plugin.updateSettings({ ttsFormat: value });
+      });
+    });
+    new import_obsidian5.Setting(containerEl).setName("采样率").setDesc("常用 16000 / 24000 / 48000。改这个也会产生新的缓存。").addText(
+      (text) => text.setValue(String(this.plugin.settings.ttsSampleRate)).onChange(async (value) => {
+        const rate = Number(value);
+        if (!Number.isFinite(rate) || rate <= 0) return;
+        await this.plugin.updateSettings({ ttsSampleRate: Math.round(rate) });
+      })
+    );
+    new import_obsidian5.Setting(containerEl).setName("语种提示").setDesc("如 en。留空则不传，由模型自行判断。").addText(
+      (text) => text.setPlaceholder("en").setValue(this.plugin.settings.ttsLanguage).onChange(async (value) => {
+        await this.plugin.updateSettings({ ttsLanguage: value.trim() });
+      })
+    );
+    new import_obsidian5.Setting(containerEl).setName("指令控制").setDesc(
+      "用自然语言描述方言、情感或角色，例如「用缓慢、清晰的教学语气朗读」。留空则不传。并非所有模型都支持。"
+    ).addText(
+      (text) => text.setPlaceholder("例如：用缓慢清晰的语气朗读").setValue(this.plugin.settings.ttsInstruction).onChange(async (value) => {
+        await this.plugin.updateSettings({ ttsInstruction: value });
       })
     );
     new import_obsidian5.Setting(containerEl).setName("试听云端音色").setDesc("合成一句固定的英文并播放，结果按「模型 + 音色 + 格式 + 文本」缓存。").addButton(
@@ -2342,7 +2414,7 @@ ${ids.join("\n")}`;
   }
   async runWithDiagnostics(button, idleLabel, busyLabel, context, action) {
     this.diagnosticLines = [];
-    this.appendDiagnostic(`构建时间：${"2026-10-04T07:08:53.660Z"}`);
+    this.appendDiagnostic(`构建时间：${"2026-10-04T07:21:19.318Z"}`);
     this.appendDiagnostic(`时间：${(/* @__PURE__ */ new Date()).toLocaleString()}`);
     for (const line of context) this.appendDiagnostic(line);
     try {
@@ -2422,33 +2494,33 @@ ${previewRequestBody(
   }
   async auditionCloudVoice() {
     const apiKey = this.requireKey(this.plugin.settings.ttsKeyId, "语音合成");
-    const { ttsBaseUrl, ttsModel, ttsVoice } = this.plugin.settings;
+    const { ttsBaseUrl } = this.plugin.settings;
     if (!ttsBaseUrl) throw new Error("尚未填写接入地址。");
-    if (!ttsVoice) throw new Error("尚未填写音色 —— 合成接口的 voice 是必填项。");
+    if (!this.plugin.settings.ttsVoice) {
+      throw new Error("尚未填写音色 —— 合成接口的 voice 是必填项。");
+    }
     const mismatch = describeKeyEndpointMismatch(apiKey, ttsBaseUrl);
     if (mismatch) this.appendDiagnostic(`⚠ ${mismatch}`);
-    const format = "mp3";
     const text = "The plan is ready.";
+    const voice = toTtsVoice(this.plugin.settings);
+    const signature = voiceSignature(voice);
     this.appendDiagnostic(`合成地址：${ttsBaseUrl}/api/v1/services/audio/tts/SpeechSynthesizer`);
-    this.appendDiagnostic(
-      `请求体预览：
-${previewTtsBody(
-        { baseUrl: ttsBaseUrl, apiKey, model: ttsModel, voice: ttsVoice, format },
-        text
-      )}`
-    );
-    const path = await audioCachePath(text, ttsVoice, ttsModel, format);
+    this.appendDiagnostic(`请求体预览：
+${previewTtsBody(voice, text)}`);
+    const path = await audioCachePath(signature, text, voice.format);
     let bytes = await readCachedAudio(this.app, path);
     const cached = bytes !== void 0;
     if (!bytes) {
-      const result = await synthesizeSpeech(
-        { baseUrl: ttsBaseUrl, apiKey, model: ttsModel, voice: ttsVoice, format },
-        text
-      );
+      const result = await synthesizeSpeech({ baseUrl: ttsBaseUrl, apiKey, voice }, text);
       bytes = result.bytes;
-      await writeCachedAudio(this.app, path, bytes);
+      await cacheSynthesizedAudio(
+        this.app,
+        signature,
+        { text, format: voice.format, voice: voice.voice, model: voice.model },
+        bytes
+      );
     }
-    await playAudioBytes(bytes, guessMimeType(format));
+    await playAudioBytes(bytes, guessMimeType(voice.format));
     return [
       `待合成文本：${text}`,
       `音频字节：${bytes.byteLength} B`,
