@@ -5,6 +5,7 @@ import {
   buildCardsFile,
   buildQueueFile,
   createCard,
+  hasCardFor,
   makeCardId,
   parseCards,
   parseQueueChecks,
@@ -104,6 +105,26 @@ describe("makeCardId", () => {
 
   it("falls back for an unusable seed", () => {
     expect(makeCardId([], "///")).toBe("card");
+  });
+});
+
+describe("hasCardFor", () => {
+  // 只按 id 去重不够：makeCardId 遇到重名会生成 "postpone-2"，
+  // 于是同一句话点两次「加入闪卡」会得到两张一模一样的卡
+  it("detects a duplicate term from the same note", () => {
+    expect(hasCardFor([card()], "postpone", "[[测试文章]]")).toBe(true);
+  });
+
+  it("ignores case and surrounding spaces", () => {
+    expect(hasCardFor([card()], "  Postpone ", "[[测试文章]]")).toBe(true);
+  });
+
+  it("allows the same word from a different note", () => {
+    expect(hasCardFor([card()], "postpone", "[[另一篇]]")).toBe(false);
+  });
+
+  it("allows a different word from the same note", () => {
+    expect(hasCardFor([card()], "incomplete", "[[测试文章]]")).toBe(false);
   });
 });
 

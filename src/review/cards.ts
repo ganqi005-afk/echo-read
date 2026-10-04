@@ -146,6 +146,19 @@ export function makeCardId(existing: string[], seed: string): string {
   return `${base}-${index}`;
 }
 
+// 是否已经有同一来源、同一个词的卡片。
+//
+// 只按 id 去重是不够的：makeCardId 遇到重名会生成 "postpone-2"，
+// 于是同一句话点两次「加入闪卡」就会得到两张一模一样的卡。
+export function hasCardFor(cards: ReviewCard[], term: string, source: string): boolean {
+  const key = cardKey(term, source);
+  return cards.some((card) => cardKey(card.term, card.source) === key);
+}
+
+function cardKey(term: string, source: string): string {
+  return `${term.trim().toLowerCase()}\u0000${source.trim()}`;
+}
+
 export function createCard(
   id: string,
   term: string,

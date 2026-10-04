@@ -201,6 +201,28 @@ export class ReadingController {
     return group.map((element) => element.textContent ?? "").join("");
   }
 
+  /**
+   * 选中内容所在的完整句子。
+   *
+   * 加闪卡需要它：只给一个词、不给语境句，卡片背面就没有回忆线索
+   * （设计文档 9.2）。所以拖选一个词时要往上找到它所属的那句话。
+   */
+  private enclosingSentence(): string {
+    if (this.currentGroup.length > 0) return this.currentText;
+
+    const node = this.currentRange?.commonAncestorContainer;
+    const element = node instanceof HTMLElement ? node : (node?.parentElement ?? null);
+    const span = element ? element.closest(`[${SENTENCE_ATTR}]`) : null;
+    if (!(span instanceof HTMLElement)) return this.currentText;
+
+    const scope = span.closest(`[${PARAGRAPH_ATTR}]`) ?? document;
+    const index = span.getAttribute(SENTENCE_ATTR);
+    const group = Array.from(
+      scope.querySelectorAll<HTMLElement>(`[${SENTENCE_ATTR}="${index}"]`),
+    );
+    return group.length > 0 ? this.textOf(group) : this.currentText;
+  }
+
   private clearHighlight(): void {
     for (const element of this.currentGroup) element.classList.remove(CURRENT_CLASS);
     this.currentGroup = [];
@@ -303,7 +325,10 @@ export class ReadingController {
 
     bar.createEl("button", { text: "提问" }).addEventListener("click", () => {
       if (this.currentText.trim() === "") return;
-      new AskModal(this.app, this.plugin, this.currentText).open();
+      new AskModal(this.app, this.plugin, {
+        selection: this.currentText,
+        sentence: this.enclosingSentence(),
+      }).open();
     });
 
     this.shadowButton = bar.createEl("button", { text: "跟读打分" });

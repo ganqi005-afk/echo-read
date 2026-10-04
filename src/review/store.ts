@@ -3,6 +3,9 @@ import {
   applyQueueChecks,
   buildCardsFile,
   buildQueueFile,
+  createCard,
+  hasCardFor,
+  makeCardId,
   parseCards,
   parseQueueChecks,
   selectDueCards,
@@ -38,10 +41,51 @@ export async function writeCards(app: App, cards: ReviewCard[]): Promise<void> {
 export async function addCards(app: App, incoming: ReviewCard[]): Promise<number> {
   const existing = await readCards(app);
   const known = new Set(existing.map((card) => card.id));
-  const fresh = incoming.filter((card) => !known.has(card.id));
+  const fresh = incoming.filter(
+    (card) => !known.has(card.id) && !hasCardFor(existing, card.term, card.source),
+  );
   if (fresh.length === 0) return 0;
   await writeCards(app, [...existing, ...fresh]);
   return fresh.length;
+}
+
+export interface AddTermResult {
+  ok: boolean;
+  /** 失败原因，直接可以展示给用户。 */
+  reason?: string;
+  id?: string;
+}
+
+/**
+ * 把一个词加进闪卡，用它所在的句子作为语境。
+ *
+ * 语境句是必须的：卡片背面靠它提供回忆线索（设计文档 9.2），
+ * 只有词没有句子的卡片在复习时几乎帮不上忙。
+ */
+export async function addTermCard(
+  app: App,
+  term: string,
+  sentence: string,
+  source: string,
+  today: Date,
+): Promise<AddTermResult> {
+  const cleanTerm = term.trim();
+  if (cleanTerm === "") return { ok: false, reason: "没有可添加的词。" };
+  if (source === "") return { ok: false, reason: "无法确定来源笔记。" };
+
+  const cards = await readCards(app);
+  if (hasCardFor(cards, cleanTerm, source)) {
+    return { ok: false, reason: `「${cleanTerm}」在这一篇里已经有卡片了。` };
+  }
+
+  // 语境句为空时退回用词本身，至少让卡片不是空的
+  const context = sentence.trim() === "" ? cleanTerm : sentence.trim();
+  const id = makeCardId(
+    cards.map((card) => card.id),
+    cleanTerm,
+  );
+  await writeCards(app, [...cards, createCard(id, cleanTerm, context, source, today)]);
+  return { ok: true, id };
 }
 
 export interface QueueResult {

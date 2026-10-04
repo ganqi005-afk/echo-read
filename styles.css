@@ -94,22 +94,43 @@
   letter-spacing: 0.02em;
 }
 
-/* 主操作用实心强调色，与下面的问题列表明确区分 */
-.echo-read-ask .echo-read-ask-primary {
-  width: 100%;
-  min-height: 48px;
+/* 快捷操作用一行并排；窄屏自动换行堆叠 */
+.echo-read-ask .echo-read-ask-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
   margin-bottom: 22px;
-  border: none;
+}
+
+/* 主操作用实心强调色，与下面的问题列表明确区分 */
+.echo-read-ask .echo-read-ask-primary,
+.echo-read-ask .echo-read-ask-secondary {
+  flex: 1 1 140px;
+  min-height: 48px;
   border-radius: var(--radius-l);
-  background-color: var(--interactive-accent);
-  color: var(--text-on-accent);
   font-size: var(--font-ui-medium);
   font-weight: 600;
   cursor: pointer;
 }
 
+.echo-read-ask .echo-read-ask-primary {
+  border: none;
+  background-color: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
 .echo-read-ask .echo-read-ask-primary:hover {
   background-color: var(--interactive-accent-hover);
+}
+
+.echo-read-ask .echo-read-ask-secondary {
+  border: 1px solid var(--background-modifier-border);
+  background-color: var(--background-primary);
+  color: var(--text-normal);
+}
+
+.echo-read-ask .echo-read-ask-secondary:hover {
+  background-color: var(--background-modifier-hover);
 }
 
 /* 自适应网格：窄屏一列，宽屏两列 */

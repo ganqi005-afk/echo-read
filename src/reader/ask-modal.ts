@@ -4,6 +4,7 @@ import {
   askAboutSelection,
   type LlmClientOptions,
 } from "../llm/client";
+import { addTermCard } from "../review/store";
 import type EchoReadPlugin from "../main";
 
 /**
@@ -31,16 +32,23 @@ const QUICK_QUESTIONS = [
 export class AskModal extends Modal {
   private readonly plugin: EchoReadPlugin;
   private readonly selection: string;
+  /** 选中内容所在的完整句子，加闪卡时作为语境。 */
+  private readonly sentence: string;
 
   private inputEl: HTMLInputElement | null = null;
   private askButton: HTMLButtonElement | null = null;
   private answerEl: HTMLElement | null = null;
   private statusEl: HTMLElement | null = null;
 
-  constructor(app: App, plugin: EchoReadPlugin, selection: string) {
+  constructor(
+    app: App,
+    plugin: EchoReadPlugin,
+    context: { selection: string; sentence: string },
+  ) {
     super(app);
     this.plugin = plugin;
-    this.selection = selection;
+    this.selection = context.selection;
+    this.sentence = context.sentence;
   }
 
   onOpen(): void {
@@ -51,14 +59,22 @@ export class AskModal extends Modal {
     const quote = contentEl.createDiv({ cls: "echo-read-ask-quote" });
     quote.setText(this.selection);
 
-    // 主操作：词源解析。用实心按钮与下面的问答区分开 ——
-    // 它是一个"模式"，不是一个问题，混在问题列表里会让人以为只是普通提问。
-    contentEl.createDiv({ cls: "echo-read-ask-label", text: "解析方式" });
-    const primary = contentEl.createEl("button", {
+    // 快捷操作：这两件事有固定流程，与下面的自由提问区分开 ——
+    // 混进问题列表会让人以为它们也只是随口问一句。
+    contentEl.createDiv({ cls: "echo-read-ask-label", text: "快捷操作" });
+    const actions = contentEl.createDiv({ cls: "echo-read-ask-actions" });
+
+    const etymology = actions.createEl("button", {
       cls: "echo-read-ask-primary",
       text: "词源解析",
     });
-    primary.addEventListener("click", () => void this.runEtymology());
+    etymology.addEventListener("click", () => void this.runEtymology());
+
+    const addCard = actions.createEl("button", {
+      cls: "echo-read-ask-secondary",
+      text: "加入闪卡",
+    });
+    addCard.addEventListener("click", () => void this.addToCards());
 
     contentEl.createDiv({ cls: "echo-read-ask-label", text: "常见问题" });
     const chips = contentEl.createDiv({ cls: "echo-read-ask-chips" });
@@ -105,6 +121,59 @@ export class AskModal extends Modal {
         etymologyTurn: this.plugin.settings.etymologyTurn + 1,
       });
       this.finish(answer);
+    } catch (error) {
+      this.fail(error);
+    }
+  }
+
+  /**
+   * 把选中的词做成一张复习卡片。
+   *
+   * 只接受词或短语：卡片的正面是"挖空所在句"，如果选中的是整句，
+   * 挖空之后就等于把整句抹掉，那张卡没有意义。
+   * 整句练习走「跟读打分 → 讲解」，模型挑出的词会自动进卡片。
+   */
+  private async addToCards(): Promise<void> {
+    const term = this.selection.trim();
+    const words = term.split(/\s+/).filter(Boolean);
+
+    if (words.length === 0) {
+      new Notice("没有可添加的词。");
+      return;
+    }
+    if (words.length > MAX_TERM_WORDS) {
+      this.setStatus("只能添加词或短语");
+      this.setAnswer(
+        `「加入闪卡」需要选中一个词或短语（最多 ${MAX_TERM_WORDS} 个词）。\n\n` +
+          "整句练习走「跟读打分 → 讲解」，模型挑出的词会自动变成卡片。",
+      );
+      return;
+    }
+
+    const source = this.sourceLink();
+    if (source === "") {
+      new Notice("无法确定来源笔记。");
+      return;
+    }
+
+    this.setStatus("加入中…");
+    try {
+      const result = await addTermCard(this.app, term, this.sentence, source, new Date());
+      if (!result.ok) {
+        this.setStatus("未加入");
+        this.setAnswer(result.reason ?? "未加入。");
+        return;
+      }
+      this.setStatus("已加入闪卡");
+      this.setAnswer(
+        [
+          `词：${term}`,
+          `语境：${this.sentence || term}`,
+          `来源：${source}`,
+          "",
+          "打开 _lingo/cards.md 可以查看，或点左侧边栏的图层图标开始复习。",
+        ].join("\n"),
+      );
     } catch (error) {
       this.fail(error);
     }
@@ -174,4 +243,12 @@ export class AskModal extends Modal {
   private setAnswer(text: string): void {
     this.answerEl?.setText(text);
   }
+
+  private sourceLink(): string {
+    const file = this.app.workspace.getActiveFile();
+    return file ? `[[${file.basename}]]` : "";
+  }
 }
+
+/** 超过这个词数就不当作"词或短语"了。 */
+const MAX_TERM_WORDS = 4;

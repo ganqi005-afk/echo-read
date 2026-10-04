@@ -1099,6 +1099,226 @@ function truncate2(text, limit) {
 
 // src/reader/ask-modal.ts
 var import_obsidian4 = require("obsidian");
+
+// src/review/schedule.ts
+var EBBINGHAUS_INTERVALS = [1, 2, 4, 7, 15, 30, 90];
+function addDays(date, days) {
+  const next = new Date(date.getTime());
+  next.setDate(next.getDate() + days);
+  return next;
+}
+function toDateString(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+function parseDateString(value) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
+  if (!match) return void 0;
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  return Number.isNaN(date.getTime()) ? void 0 : date;
+}
+function isDue(due, today) {
+  const parsed = parseDateString(due);
+  if (!parsed) return true;
+  return toDateString(parsed) <= toDateString(today);
+}
+function nextSchedule(step, remembered, today) {
+  const safeStep = Number.isFinite(step) && step >= 0 ? Math.trunc(step) : 0;
+  const nextStep = remembered ? Math.min(safeStep + 1, EBBINGHAUS_INTERVALS.length - 1) : 0;
+  const interval = EBBINGHAUS_INTERVALS[nextStep];
+  return { step: nextStep, due: toDateString(addDays(today, interval)) };
+}
+function intervalForStep(step) {
+  const safeStep = Number.isFinite(step) ? Math.trunc(step) : 0;
+  return EBBINGHAUS_INTERVALS[Math.max(0, Math.min(safeStep, EBBINGHAUS_INTERVALS.length - 1))];
+}
+function describeStep(step) {
+  const safeStep = Math.max(0, Math.min(Math.trunc(step), EBBINGHAUS_INTERVALS.length - 1));
+  return `第 ${safeStep + 1} 档 · ${EBBINGHAUS_INTERVALS[safeStep]} 天后`;
+}
+
+// src/review/cards.ts
+var META_PATTERN = /<!--\s*lingo-card\s+(\{[\s\S]*?\})\s*-->/g;
+var CHECK_PATTERN = /^-\s*\[( |x|X)\]\s*(.*?)<!--\s*lingo-(\S+?)\s*-->\s*$/;
+function serializeCard(card) {
+  const meta = JSON.stringify(card);
+  return [
+    `- **${card.front}**`,
+    `  - 答案：${card.back}`,
+    `  - 来源：${card.source}　·　第 ${card.step + 1} 档　·　下次 ${card.due}`,
+    `  <!-- lingo-card ${meta} -->`
+  ].join("\n");
+}
+function parseCards(markdown) {
+  const cards = [];
+  for (const match of markdown.matchAll(META_PATTERN)) {
+    try {
+      const parsed = JSON.parse(match[1]);
+      if (typeof parsed.id !== "string" || parsed.id === "") continue;
+      cards.push({
+        id: parsed.id,
+        term: typeof parsed.term === "string" ? parsed.term : "",
+        front: typeof parsed.front === "string" ? parsed.front : "",
+        back: typeof parsed.back === "string" ? parsed.back : "",
+        source: typeof parsed.source === "string" ? parsed.source : "",
+        step: typeof parsed.step === "number" ? parsed.step : 0,
+        due: typeof parsed.due === "string" ? parsed.due : ""
+      });
+    } catch {
+    }
+  }
+  return cards;
+}
+function selectDueCards(cards, today) {
+  return cards.filter((card) => isDue(card.due, today)).sort((a, b) => a.due.localeCompare(b.due) || a.id.localeCompare(b.id));
+}
+function parseQueueChecks(markdown) {
+  const checks = /* @__PURE__ */ new Map();
+  for (const line of markdown.split("\n")) {
+    const match = CHECK_PATTERN.exec(line);
+    if (!match) continue;
+    checks.set(match[3], match[1].toLowerCase() === "x");
+  }
+  return checks;
+}
+function applyQueueChecks(cards, checks, today) {
+  return cards.map((card) => {
+    const remembered = checks.get(card.id);
+    if (remembered === void 0) return card;
+    const next = nextSchedule(card.step, remembered, today);
+    return { ...card, step: next.step, due: next.due };
+  });
+}
+function buildCardsFile(cards) {
+  const header = [
+    "# Echo Read 复习卡片",
+    "",
+    "这个文件由插件维护。可见部分是正常 Markdown，`[[来源笔记]]` 会让来源笔记的",
+    "反向链接面板里出现这里 —— 双向引用就是这样自动建立的。",
+    "",
+    "注释里的数据不要手改。",
+    ""
+  ];
+  return [...header, ...cards.map(serializeCard), ""].join("\n");
+}
+function buildQueueFile(cards, today) {
+  const due = selectDueCards(cards, today);
+  const lines = [
+    `# 今日复习 · ${toDateString(today)}`,
+    "",
+    due.length === 0 ? "今天没有到期的卡片。" : `共 ${due.length} 张。**勾选表示「记得」**，推进到下一档；**没勾表示「忘了」**，下一轮会重走整条曲线。`,
+    ""
+  ];
+  for (const card of due) {
+    lines.push(`- [ ] ${card.front} <!-- lingo-${card.id} -->`);
+    lines.push(`	> [!quote]- 答案${card.term ? ` · ${card.term}` : ""}`);
+    lines.push(`	> ${card.back}`);
+    lines.push(`	> 来源：${card.source}　·　${intervalForStep(card.step)} 天档`);
+    lines.push("");
+  }
+  return lines.join("\n");
+}
+function makeCardId(existing, seed) {
+  const base = seed.toLowerCase().replace(/[^a-z0-9]+/g, "").slice(0, 12) || "card";
+  if (!existing.includes(base)) return base;
+  let index = 2;
+  while (existing.includes(`${base}-${index}`)) index++;
+  return `${base}-${index}`;
+}
+function hasCardFor(cards, term, source) {
+  const key = cardKey(term, source);
+  return cards.some((card) => cardKey(card.term, card.source) === key);
+}
+function cardKey(term, source) {
+  return `${term.trim().toLowerCase()}\0${source.trim()}`;
+}
+function createCard(id, term, fullSentence, source, today) {
+  return {
+    id,
+    term,
+    front: blankOutTerm(fullSentence, term),
+    back: fullSentence,
+    source,
+    step: 0,
+    due: toDateString(addDays(today, intervalForStep(0)))
+  };
+}
+function blankOutTerm(sentence, term) {
+  const target = term.trim();
+  if (target === "") return sentence;
+  const escaped = target.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const head = /^\w/.test(target) ? "\\b" : "";
+  const tail = /\w$/.test(target) ? "\\b" : "";
+  const pattern = new RegExp(`${head}${escaped}${tail}`, "i");
+  if (!pattern.test(sentence)) return sentence;
+  return sentence.replace(pattern, "____");
+}
+
+// src/review/store.ts
+var REVIEW_DIR = "_lingo";
+var CARDS_PATH = "_lingo/cards.md";
+var REVIEW_PATH = "_lingo/review.md";
+async function readCards(app) {
+  const adapter = app.vault.adapter;
+  if (!await adapter.exists(CARDS_PATH)) return [];
+  try {
+    return parseCards(await adapter.read(CARDS_PATH));
+  } catch {
+    return [];
+  }
+}
+async function writeCards(app, cards) {
+  const adapter = app.vault.adapter;
+  if (!await adapter.exists(REVIEW_DIR)) await adapter.mkdir(REVIEW_DIR);
+  await adapter.write(CARDS_PATH, buildCardsFile(cards));
+}
+async function addCards(app, incoming) {
+  const existing = await readCards(app);
+  const known = new Set(existing.map((card) => card.id));
+  const fresh = incoming.filter(
+    (card) => !known.has(card.id) && !hasCardFor(existing, card.term, card.source)
+  );
+  if (fresh.length === 0) return 0;
+  await writeCards(app, [...existing, ...fresh]);
+  return fresh.length;
+}
+async function addTermCard(app, term, sentence, source, today) {
+  const cleanTerm = term.trim();
+  if (cleanTerm === "") return { ok: false, reason: "没有可添加的词。" };
+  if (source === "") return { ok: false, reason: "无法确定来源笔记。" };
+  const cards = await readCards(app);
+  if (hasCardFor(cards, cleanTerm, source)) {
+    return { ok: false, reason: `「${cleanTerm}」在这一篇里已经有卡片了。` };
+  }
+  const context = sentence.trim() === "" ? cleanTerm : sentence.trim();
+  const id = makeCardId(
+    cards.map((card) => card.id),
+    cleanTerm
+  );
+  await writeCards(app, [...cards, createCard(id, cleanTerm, context, source, today)]);
+  return { ok: true, id };
+}
+async function generateReviewQueue(app, today) {
+  const adapter = app.vault.adapter;
+  const cards = await readCards(app);
+  let advanced = 0;
+  let updated = cards;
+  if (await adapter.exists(REVIEW_PATH)) {
+    try {
+      const checks = parseQueueChecks(await adapter.read(REVIEW_PATH));
+      updated = applyQueueChecks(cards, checks, today);
+      advanced = updated.filter((card, index) => card.step !== cards[index].step).length;
+      if (advanced > 0) await writeCards(app, updated);
+    } catch {
+    }
+  }
+  await adapter.write(REVIEW_PATH, buildQueueFile(updated, today));
+  return { queued: selectDueCards(updated, today).length, advanced };
+}
+
+// src/reader/ask-modal.ts
 var QUICK_QUESTIONS = [
   "这句话是什么意思？",
   "这个搭配怎么用？",
@@ -1108,14 +1328,17 @@ var QUICK_QUESTIONS = [
 var AskModal = class extends import_obsidian4.Modal {
   plugin;
   selection;
+  /** 选中内容所在的完整句子，加闪卡时作为语境。 */
+  sentence;
   inputEl = null;
   askButton = null;
   answerEl = null;
   statusEl = null;
-  constructor(app, plugin, selection) {
+  constructor(app, plugin, context) {
     super(app);
     this.plugin = plugin;
-    this.selection = selection;
+    this.selection = context.selection;
+    this.sentence = context.sentence;
   }
   onOpen() {
     const { contentEl } = this;
@@ -1123,12 +1346,18 @@ var AskModal = class extends import_obsidian4.Modal {
     contentEl.createEl("h3", { text: "问 AI", cls: "echo-read-ask-title" });
     const quote = contentEl.createDiv({ cls: "echo-read-ask-quote" });
     quote.setText(this.selection);
-    contentEl.createDiv({ cls: "echo-read-ask-label", text: "解析方式" });
-    const primary = contentEl.createEl("button", {
+    contentEl.createDiv({ cls: "echo-read-ask-label", text: "快捷操作" });
+    const actions = contentEl.createDiv({ cls: "echo-read-ask-actions" });
+    const etymology = actions.createEl("button", {
       cls: "echo-read-ask-primary",
       text: "词源解析"
     });
-    primary.addEventListener("click", () => void this.runEtymology());
+    etymology.addEventListener("click", () => void this.runEtymology());
+    const addCard = actions.createEl("button", {
+      cls: "echo-read-ask-secondary",
+      text: "加入闪卡"
+    });
+    addCard.addEventListener("click", () => void this.addToCards());
     contentEl.createDiv({ cls: "echo-read-ask-label", text: "常见问题" });
     const chips = contentEl.createDiv({ cls: "echo-read-ask-chips" });
     for (const question of QUICK_QUESTIONS) {
@@ -1168,6 +1397,56 @@ var AskModal = class extends import_obsidian4.Modal {
         etymologyTurn: this.plugin.settings.etymologyTurn + 1
       });
       this.finish(answer);
+    } catch (error) {
+      this.fail(error);
+    }
+  }
+  /**
+   * 把选中的词做成一张复习卡片。
+   *
+   * 只接受词或短语：卡片的正面是"挖空所在句"，如果选中的是整句，
+   * 挖空之后就等于把整句抹掉，那张卡没有意义。
+   * 整句练习走「跟读打分 → 讲解」，模型挑出的词会自动进卡片。
+   */
+  async addToCards() {
+    const term = this.selection.trim();
+    const words = term.split(/\s+/).filter(Boolean);
+    if (words.length === 0) {
+      new import_obsidian4.Notice("没有可添加的词。");
+      return;
+    }
+    if (words.length > MAX_TERM_WORDS) {
+      this.setStatus("只能添加词或短语");
+      this.setAnswer(
+        `「加入闪卡」需要选中一个词或短语（最多 ${MAX_TERM_WORDS} 个词）。
+
+整句练习走「跟读打分 → 讲解」，模型挑出的词会自动变成卡片。`
+      );
+      return;
+    }
+    const source = this.sourceLink();
+    if (source === "") {
+      new import_obsidian4.Notice("无法确定来源笔记。");
+      return;
+    }
+    this.setStatus("加入中…");
+    try {
+      const result = await addTermCard(this.app, term, this.sentence, source, /* @__PURE__ */ new Date());
+      if (!result.ok) {
+        this.setStatus("未加入");
+        this.setAnswer(result.reason ?? "未加入。");
+        return;
+      }
+      this.setStatus("已加入闪卡");
+      this.setAnswer(
+        [
+          `词：${term}`,
+          `语境：${this.sentence || term}`,
+          `来源：${source}`,
+          "",
+          "打开 _lingo/cards.md 可以查看，或点左侧边栏的图层图标开始复习。"
+        ].join("\n")
+      );
     } catch (error) {
       this.fail(error);
     }
@@ -1230,7 +1509,12 @@ ${trimmed}`);
   setAnswer(text) {
     this.answerEl?.setText(text);
   }
+  sourceLink() {
+    const file = this.app.workspace.getActiveFile();
+    return file ? `[[${file.basename}]]` : "";
+  }
 };
+var MAX_TERM_WORDS = 4;
 
 // src/speech/tts-system.ts
 function loadVoices(timeoutMs = 2e3) {
@@ -1943,199 +2227,6 @@ function wrapTextNode(node, index) {
   span.appendChild(node);
 }
 
-// src/review/schedule.ts
-var EBBINGHAUS_INTERVALS = [1, 2, 4, 7, 15, 30, 90];
-function addDays(date, days) {
-  const next = new Date(date.getTime());
-  next.setDate(next.getDate() + days);
-  return next;
-}
-function toDateString(date) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-function parseDateString(value) {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
-  if (!match) return void 0;
-  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
-  return Number.isNaN(date.getTime()) ? void 0 : date;
-}
-function isDue(due, today) {
-  const parsed = parseDateString(due);
-  if (!parsed) return true;
-  return toDateString(parsed) <= toDateString(today);
-}
-function nextSchedule(step, remembered, today) {
-  const safeStep = Number.isFinite(step) && step >= 0 ? Math.trunc(step) : 0;
-  const nextStep = remembered ? Math.min(safeStep + 1, EBBINGHAUS_INTERVALS.length - 1) : 0;
-  const interval = EBBINGHAUS_INTERVALS[nextStep];
-  return { step: nextStep, due: toDateString(addDays(today, interval)) };
-}
-function intervalForStep(step) {
-  const safeStep = Number.isFinite(step) ? Math.trunc(step) : 0;
-  return EBBINGHAUS_INTERVALS[Math.max(0, Math.min(safeStep, EBBINGHAUS_INTERVALS.length - 1))];
-}
-function describeStep(step) {
-  const safeStep = Math.max(0, Math.min(Math.trunc(step), EBBINGHAUS_INTERVALS.length - 1));
-  return `第 ${safeStep + 1} 档 · ${EBBINGHAUS_INTERVALS[safeStep]} 天后`;
-}
-
-// src/review/cards.ts
-var META_PATTERN = /<!--\s*lingo-card\s+(\{[\s\S]*?\})\s*-->/g;
-var CHECK_PATTERN = /^-\s*\[( |x|X)\]\s*(.*?)<!--\s*lingo-(\S+?)\s*-->\s*$/;
-function serializeCard(card) {
-  const meta = JSON.stringify(card);
-  return [
-    `- **${card.front}**`,
-    `  - 答案：${card.back}`,
-    `  - 来源：${card.source}　·　第 ${card.step + 1} 档　·　下次 ${card.due}`,
-    `  <!-- lingo-card ${meta} -->`
-  ].join("\n");
-}
-function parseCards(markdown) {
-  const cards = [];
-  for (const match of markdown.matchAll(META_PATTERN)) {
-    try {
-      const parsed = JSON.parse(match[1]);
-      if (typeof parsed.id !== "string" || parsed.id === "") continue;
-      cards.push({
-        id: parsed.id,
-        term: typeof parsed.term === "string" ? parsed.term : "",
-        front: typeof parsed.front === "string" ? parsed.front : "",
-        back: typeof parsed.back === "string" ? parsed.back : "",
-        source: typeof parsed.source === "string" ? parsed.source : "",
-        step: typeof parsed.step === "number" ? parsed.step : 0,
-        due: typeof parsed.due === "string" ? parsed.due : ""
-      });
-    } catch {
-    }
-  }
-  return cards;
-}
-function selectDueCards(cards, today) {
-  return cards.filter((card) => isDue(card.due, today)).sort((a, b) => a.due.localeCompare(b.due) || a.id.localeCompare(b.id));
-}
-function parseQueueChecks(markdown) {
-  const checks = /* @__PURE__ */ new Map();
-  for (const line of markdown.split("\n")) {
-    const match = CHECK_PATTERN.exec(line);
-    if (!match) continue;
-    checks.set(match[3], match[1].toLowerCase() === "x");
-  }
-  return checks;
-}
-function applyQueueChecks(cards, checks, today) {
-  return cards.map((card) => {
-    const remembered = checks.get(card.id);
-    if (remembered === void 0) return card;
-    const next = nextSchedule(card.step, remembered, today);
-    return { ...card, step: next.step, due: next.due };
-  });
-}
-function buildCardsFile(cards) {
-  const header = [
-    "# Echo Read 复习卡片",
-    "",
-    "这个文件由插件维护。可见部分是正常 Markdown，`[[来源笔记]]` 会让来源笔记的",
-    "反向链接面板里出现这里 —— 双向引用就是这样自动建立的。",
-    "",
-    "注释里的数据不要手改。",
-    ""
-  ];
-  return [...header, ...cards.map(serializeCard), ""].join("\n");
-}
-function buildQueueFile(cards, today) {
-  const due = selectDueCards(cards, today);
-  const lines = [
-    `# 今日复习 · ${toDateString(today)}`,
-    "",
-    due.length === 0 ? "今天没有到期的卡片。" : `共 ${due.length} 张。**勾选表示「记得」**，推进到下一档；**没勾表示「忘了」**，下一轮会重走整条曲线。`,
-    ""
-  ];
-  for (const card of due) {
-    lines.push(`- [ ] ${card.front} <!-- lingo-${card.id} -->`);
-    lines.push(`	> [!quote]- 答案${card.term ? ` · ${card.term}` : ""}`);
-    lines.push(`	> ${card.back}`);
-    lines.push(`	> 来源：${card.source}　·　${intervalForStep(card.step)} 天档`);
-    lines.push("");
-  }
-  return lines.join("\n");
-}
-function makeCardId(existing, seed) {
-  const base = seed.toLowerCase().replace(/[^a-z0-9]+/g, "").slice(0, 12) || "card";
-  if (!existing.includes(base)) return base;
-  let index = 2;
-  while (existing.includes(`${base}-${index}`)) index++;
-  return `${base}-${index}`;
-}
-function createCard(id, term, fullSentence, source, today) {
-  return {
-    id,
-    term,
-    front: blankOutTerm(fullSentence, term),
-    back: fullSentence,
-    source,
-    step: 0,
-    due: toDateString(addDays(today, intervalForStep(0)))
-  };
-}
-function blankOutTerm(sentence, term) {
-  const target = term.trim();
-  if (target === "") return sentence;
-  const escaped = target.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const head = /^\w/.test(target) ? "\\b" : "";
-  const tail = /\w$/.test(target) ? "\\b" : "";
-  const pattern = new RegExp(`${head}${escaped}${tail}`, "i");
-  if (!pattern.test(sentence)) return sentence;
-  return sentence.replace(pattern, "____");
-}
-
-// src/review/store.ts
-var REVIEW_DIR = "_lingo";
-var CARDS_PATH = "_lingo/cards.md";
-var REVIEW_PATH = "_lingo/review.md";
-async function readCards(app) {
-  const adapter = app.vault.adapter;
-  if (!await adapter.exists(CARDS_PATH)) return [];
-  try {
-    return parseCards(await adapter.read(CARDS_PATH));
-  } catch {
-    return [];
-  }
-}
-async function writeCards(app, cards) {
-  const adapter = app.vault.adapter;
-  if (!await adapter.exists(REVIEW_DIR)) await adapter.mkdir(REVIEW_DIR);
-  await adapter.write(CARDS_PATH, buildCardsFile(cards));
-}
-async function addCards(app, incoming) {
-  const existing = await readCards(app);
-  const known = new Set(existing.map((card) => card.id));
-  const fresh = incoming.filter((card) => !known.has(card.id));
-  if (fresh.length === 0) return 0;
-  await writeCards(app, [...existing, ...fresh]);
-  return fresh.length;
-}
-async function generateReviewQueue(app, today) {
-  const adapter = app.vault.adapter;
-  const cards = await readCards(app);
-  let advanced = 0;
-  let updated = cards;
-  if (await adapter.exists(REVIEW_PATH)) {
-    try {
-      const checks = parseQueueChecks(await adapter.read(REVIEW_PATH));
-      updated = applyQueueChecks(cards, checks, today);
-      advanced = updated.filter((card, index) => card.step !== cards[index].step).length;
-      if (advanced > 0) await writeCards(app, updated);
-    } catch {
-    }
-  }
-  await adapter.write(REVIEW_PATH, buildQueueFile(updated, today));
-  return { queued: selectDueCards(updated, today).length, advanced };
-}
-
 // src/reader/controller.ts
 var ReadingController = class {
   constructor(app, plugin) {
@@ -2268,6 +2359,25 @@ var ReadingController = class {
   textOf(group) {
     return group.map((element) => element.textContent ?? "").join("");
   }
+  /**
+   * 选中内容所在的完整句子。
+   *
+   * 加闪卡需要它：只给一个词、不给语境句，卡片背面就没有回忆线索
+   * （设计文档 9.2）。所以拖选一个词时要往上找到它所属的那句话。
+   */
+  enclosingSentence() {
+    if (this.currentGroup.length > 0) return this.currentText;
+    const node = this.currentRange?.commonAncestorContainer;
+    const element = node instanceof HTMLElement ? node : node?.parentElement ?? null;
+    const span = element ? element.closest(`[${SENTENCE_ATTR}]`) : null;
+    if (!(span instanceof HTMLElement)) return this.currentText;
+    const scope = span.closest(`[${PARAGRAPH_ATTR}]`) ?? document;
+    const index = span.getAttribute(SENTENCE_ATTR);
+    const group = Array.from(
+      scope.querySelectorAll(`[${SENTENCE_ATTR}="${index}"]`)
+    );
+    return group.length > 0 ? this.textOf(group) : this.currentText;
+  }
   clearHighlight() {
     for (const element of this.currentGroup) element.classList.remove(CURRENT_CLASS);
     this.currentGroup = [];
@@ -2350,7 +2460,10 @@ var ReadingController = class {
     bar.createEl("button", { text: "听原句" }).addEventListener("click", () => void this.speak());
     bar.createEl("button", { text: "提问" }).addEventListener("click", () => {
       if (this.currentText.trim() === "") return;
-      new AskModal(this.app, this.plugin, this.currentText).open();
+      new AskModal(this.app, this.plugin, {
+        selection: this.currentText,
+        sentence: this.enclosingSentence()
+      }).open();
     });
     this.shadowButton = bar.createEl("button", { text: "跟读打分" });
     this.shadowButton.addEventListener("click", () => void this.toggleShadowing());
@@ -3383,7 +3496,7 @@ ${ids.join("\n")}`;
   }
   async runWithDiagnostics(button, idleLabel, busyLabel, context, action) {
     this.diagnosticLines = [];
-    this.appendDiagnostic(`构建时间：${"2026-10-04T11:52:01.283Z"}`);
+    this.appendDiagnostic(`构建时间：${"2026-10-04T11:54:58.114Z"}`);
     this.appendDiagnostic(`时间：${(/* @__PURE__ */ new Date()).toLocaleString()}`);
     for (const line of context) this.appendDiagnostic(line);
     try {
