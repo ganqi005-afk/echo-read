@@ -50,7 +50,7 @@ var Recorder = class {
   chunks = [];
   startedAt = 0;
   async start() {
-    if (this.recorder) throw new Error("\u5F55\u97F3\u5DF2\u5728\u8FDB\u884C\u4E2D\u3002");
+    if (this.recorder) throw new Error("录音已在进行中。");
     this.stream = await navigator.mediaDevices.getUserMedia({
       audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true }
     });
@@ -65,7 +65,7 @@ var Recorder = class {
   async stop() {
     const recorder = this.recorder;
     const stream = this.stream;
-    if (!recorder || !stream) throw new Error("\u5F53\u524D\u6CA1\u6709\u8FDB\u884C\u4E2D\u7684\u5F55\u97F3\u3002");
+    if (!recorder || !stream) throw new Error("当前没有进行中的录音。");
     const blob = await new Promise((resolve) => {
       recorder.onstop = () => resolve(new Blob(this.chunks, { type: recorder.mimeType }));
       recorder.stop();
@@ -338,7 +338,7 @@ function buildOpenAiCompatibleBody(options) {
 function extractTranscript(payload) {
   const text = tryExtract(payload);
   if (text !== void 0 && text.trim() !== "") return text.trim();
-  throw new Error(`\u65E0\u6CD5\u4ECE\u54CD\u5E94\u4E2D\u63D0\u53D6\u8BC6\u522B\u6587\u672C\u3002\u539F\u59CB\u54CD\u5E94\uFF1A${safeStringify(payload)}`);
+  throw new Error(`无法从响应中提取识别文本。原始响应：${safeStringify(payload)}`);
 }
 function tryExtract(payload) {
   if (!payload || typeof payload !== "object") return void 0;
@@ -378,18 +378,18 @@ function safeStringify(value) {
   try {
     return JSON.stringify(value).slice(0, 800);
   } catch {
-    return "[\u65E0\u6CD5\u5E8F\u5217\u5316\u7684\u54CD\u5E94]";
+    return "[无法序列化的响应]";
   }
 }
 
 // src/speech/models.ts
 function extractModelIds(payload) {
   if (!payload || typeof payload !== "object") {
-    throw new Error(`\u65E0\u6CD5\u89E3\u6790\u6A21\u578B\u5217\u8868\u54CD\u5E94\uFF1A${safeStringify2(payload)}`);
+    throw new Error(`无法解析模型列表响应：${safeStringify2(payload)}`);
   }
   const data = payload.data;
   if (!Array.isArray(data)) {
-    throw new Error(`\u6A21\u578B\u5217\u8868\u54CD\u5E94\u91CC\u6CA1\u6709 data \u6570\u7EC4\uFF1A${safeStringify2(payload)}`);
+    throw new Error(`模型列表响应里没有 data 数组：${safeStringify2(payload)}`);
   }
   const ids = [];
   for (const entry of data) {
@@ -406,7 +406,7 @@ function safeStringify2(value) {
   try {
     return JSON.stringify(value).slice(0, 500);
   } catch {
-    return "[\u65E0\u6CD5\u5E8F\u5217\u5316\u7684\u54CD\u5E94]";
+    return "[无法序列化的响应]";
   }
 }
 
@@ -428,11 +428,11 @@ function previewRequestBody(options, audioDataUri) {
   }) : buildAsrBody({ model: options.model, audioDataUri, sampleRate: 16e3 });
   return JSON.stringify(body, null, 2).replaceAll(
     audioDataUri,
-    `\xABbase64 \u97F3\u9891\uFF0C${audioDataUri.length} \u5B57\u7B26\xBB`
+    `«base64 音频，${audioDataUri.length} 字符»`
   );
 }
 async function listModels(options) {
-  if (!options.apiKey) throw new Error("\u5C1A\u672A\u914D\u7F6E API Key\u3002");
+  if (!options.apiKey) throw new Error("尚未配置 API Key。");
   const url = `${options.baseUrl.replace(/\/+$/, "")}/models`;
   const response = await (0, import_obsidian.requestUrl)({
     url,
@@ -442,18 +442,18 @@ async function listModels(options) {
   });
   if (response.status < 200 || response.status >= 300) {
     const body = response.text ?? "";
-    console.error("[Echo Read] \u83B7\u53D6\u6A21\u578B\u5217\u8868\u5931\u8D25", {
+    console.error("[Echo Read] 获取模型列表失败", {
       status: response.status,
       url,
       body
     });
-    throw new Error(`\u83B7\u53D6\u6A21\u578B\u5217\u8868\u5931\u8D25\uFF08HTTP ${response.status}\uFF09\uFF1A${truncate(body, 400)}`);
+    throw new Error(`获取模型列表失败（HTTP ${response.status}）：${truncate(body, 400)}`);
   }
   return extractModelIds(response.json);
 }
 async function transcribeAudio(options, audioDataUri) {
   if (!options.apiKey) {
-    throw new Error("\u5C1A\u672A\u914D\u7F6E API Key\uFF0C\u8BF7\u5148\u5728\u63D2\u4EF6\u8BBE\u7F6E\u4E2D\u586B\u5199\u3002");
+    throw new Error("尚未配置 API Key，请先在插件设置中填写。");
   }
   const url = buildEndpoint(options.baseUrl, options.transport);
   const requestBody = options.transport === "openai-compatible" ? buildOpenAiCompatibleBody({
@@ -474,19 +474,19 @@ async function transcribeAudio(options, audioDataUri) {
   });
   if (response.status < 200 || response.status >= 300) {
     const body = response.text ?? "";
-    console.error("[Echo Read] \u8BED\u97F3\u8BC6\u522B\u8BF7\u6C42\u5931\u8D25", {
+    console.error("[Echo Read] 语音识别请求失败", {
       status: response.status,
       url,
       body
     });
     throw new Error(
-      `\u8BED\u97F3\u8BC6\u522B\u8BF7\u6C42\u5931\u8D25\uFF08HTTP ${response.status}\uFF09\uFF1A${truncate(body, 600)}`
+      `语音识别请求失败（HTTP ${response.status}）：${truncate(body, 600)}`
     );
   }
   return extractTranscript(response.json);
 }
 function truncate(text, limit = 600) {
-  return text.length > limit ? `${text.slice(0, limit)}\u2026` : text;
+  return text.length > limit ? `${text.slice(0, limit)}…` : text;
 }
 
 // src/debug.ts
@@ -496,10 +496,10 @@ function installDebugHook() {
     async start() {
       current = new Recorder();
       await current.start();
-      return "\u5F55\u97F3\u4E2D\u2026\u2026\u73B0\u5728\u8BF4\u4E00\u53E5\u82F1\u6587\uFF0C\u7136\u540E\u8C03\u7528 stopAndTranscribe(key)";
+      return "录音中……现在说一句英文，然后调用 stopAndTranscribe(key)";
     },
     async stopAndTranscribe(apiKey, expected, baseUrl = DEFAULT_BASE_URL, model = DEFAULT_ASR_MODEL, transport = "dashscope-native") {
-      if (!current) throw new Error("\u8BF7\u5148\u8C03\u7528 start()");
+      if (!current) throw new Error("请先调用 start()");
       const recorder = current;
       current = void 0;
       const recording = await recorder.stop();
@@ -556,11 +556,11 @@ function classifyApiKey(key) {
 function describeApiKeyKind(kind) {
   switch (kind) {
     case "token-plan":
-      return "Token Plan \u578B\uFF08sk-sp- \u5F00\u5934\uFF09";
+      return "Token Plan 型（sk-sp- 开头）";
     case "standard":
-      return "\u666E\u901A API Key \u578B\uFF08sk- \u5F00\u5934\uFF09";
+      return "普通 API Key 型（sk- 开头）";
     default:
-      return "\u672A\u8BC6\u522B\u7684\u683C\u5F0F";
+      return "未识别的格式";
   }
 }
 function describeKeyEndpointMismatch(key, baseUrl) {
@@ -568,13 +568,13 @@ function describeKeyEndpointMismatch(key, baseUrl) {
   const isTokenPlanEndpoint = baseUrl.toLowerCase().includes("token-plan");
   const isCompatibleEndpoint = baseUrl.toLowerCase().includes("compatible-mode");
   if (kind === "token-plan" && !isTokenPlanEndpoint) {
-    return "\u5F53\u524D Key \u662F Token Plan \u578B\uFF08sk-sp-\uFF09\uFF0C\u4F46\u63A5\u5165\u5730\u5740\u4E0D\u662F Token Plan \u7AEF\u70B9\u3002Token Plan \u7684 Key \u4E0D\u80FD\u7528\u4E8E\u666E\u901A\u7AEF\u70B9\uFF0C\u670D\u52A1\u7AEF\u4F1A\u8FD4\u56DE InvalidApiKey\u3002";
+    return "当前 Key 是 Token Plan 型（sk-sp-），但接入地址不是 Token Plan 端点。Token Plan 的 Key 不能用于普通端点，服务端会返回 InvalidApiKey。";
   }
   if (kind === "standard" && isTokenPlanEndpoint) {
-    return "\u5F53\u524D Key \u662F\u666E\u901A\u578B\uFF08sk-\uFF09\uFF0C\u4F46\u63A5\u5165\u5730\u5740\u662F Token Plan \u7AEF\u70B9\u3002Token Plan \u7AEF\u70B9\u9700\u8981 sk-sp- \u5F00\u5934\u7684 Key\u3002";
+    return "当前 Key 是普通型（sk-），但接入地址是 Token Plan 端点。Token Plan 端点需要 sk-sp- 开头的 Key。";
   }
   if (kind === "token-plan" && isTokenPlanEndpoint && !isCompatibleEndpoint) {
-    return "Token Plan \u7AEF\u70B9\u7684\u6587\u6863\u5316\u8DEF\u5F84\u90FD\u5E26 /compatible-mode/v1\uFF0C\u5F53\u524D\u5730\u5740\u770B\u8D77\u6765\u7F3A\u5C11\u8FD9\u4E00\u6BB5\u3002";
+    return "Token Plan 端点的文档化路径都带 /compatible-mode/v1，当前地址看起来缺少这一段。";
   }
   return void 0;
 }
@@ -669,7 +669,7 @@ async function hasSecret(app, name) {
 async function loadSecret(app, name, passphrase) {
   const secrets = await readSecrets(app);
   const blob = secrets[name];
-  if (!blob) throw new Error("\u5C1A\u672A\u4FDD\u5B58 API Key\u3002");
+  if (!blob) throw new Error("尚未保存 API Key。");
   return decryptString(blob, passphrase);
 }
 async function deleteSecret(app, name) {
@@ -682,43 +682,43 @@ async function deleteSecret(app, name) {
 var PROVIDER_PRESETS = [
   {
     id: "bailian",
-    name: "\u963F\u91CC\u4E91\u767E\u70BC \xB7 \u6309\u91CF\u8BA1\u8D39",
+    name: "阿里云百炼 · 按量计费",
     transport: "dashscope-native",
     baseUrl: DEFAULT_BASE_URL,
     keyPrefixHint: "sk-",
-    note: "\u8BC6\u522B 0.00022 \u5143/\u79D2\uFF0C\u5408\u6210 0.8 \u5143/\u4E07\u5B57\u7B26\u3002\u514D\u8D39\u989D\u5EA6\uFF1A\u8BC6\u522B 36,000 \u79D2 / \u5408\u6210 1 \u4E07\u5B57\u7B26\u3002"
+    note: "识别 0.00022 元/秒，合成 0.8 元/万字符。免费额度：识别 36,000 秒 / 合成 1 万字符。"
   },
   {
     id: "bailian-token-plan",
-    name: "\u963F\u91CC\u4E91\u767E\u70BC \xB7 Token Plan\uFF08\u8BA2\u9605\u5236\uFF09",
+    name: "阿里云百炼 · Token Plan（订阅制）",
     transport: "openai-compatible",
     baseUrl: "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
     keyPrefixHint: "sk-sp-",
-    note: "\u6309 Credits \u62B5\u6263\u3002\u8BE5\u6E20\u9053\u662F\u5426\u8986\u76D6\u8BED\u97F3\u8BC6\u522B\u4E0E\u5408\u6210\u6A21\u578B\u5C1A\u672A\u9A8C\u8BC1\uFF0C\u8BF7\u7528\u300C\u6D4B\u8BD5\u8FDE\u63A5\u300D\u786E\u8BA4\u3002"
+    note: "按 Credits 抵扣。该渠道是否覆盖语音识别与合成模型尚未验证，请用「测试连接」确认。"
   },
   {
     id: "qianwen-speech",
-    name: "\u5343\u95EEAI\u5E73\u53F0 \xB7 \u8BED\u97F3\u63A5\u53E3\uFF08DashScope \u539F\u751F\uFF09",
+    name: "千问AI平台 · 语音接口（DashScope 原生）",
     transport: "dashscope-native",
     baseUrl: "https://maas.qianwenaiapi.com",
     keyPrefixHint: "sk-",
-    note: "qwen-audio-3.x-asr-flash \u5728\u8FD9\u5BB6\u5E73\u53F0\u4E0A\u8D70 DashScope \u539F\u751F\u534F\u8BAE\u3002\u8BED\u97F3\u6A21\u578B\u8BF7\u7528\u8FD9\u4E00\u9879\uFF0C\u4E0D\u8981\u7528 Token Plan \u7AEF\u70B9\u3002"
+    note: "qwen-audio-3.x-asr-flash 在这家平台上走 DashScope 原生协议。语音模型请用这一项，不要用 Token Plan 端点。"
   },
   {
     id: "qianwen-token-plan",
-    name: "\u5343\u95EEAI\u5E73\u53F0 \xB7 Token Plan\uFF08OpenAI \u517C\u5BB9\uFF09",
+    name: "千问AI平台 · Token Plan（OpenAI 兼容）",
     transport: "openai-compatible",
     baseUrl: "https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1",
     keyPrefixHint: "sk-",
-    note: "\u8FD9\u662F Token Plan \u7684\u804A\u5929\u7AEF\u70B9\u3002\u7528\u5B83\u8C03\u8BED\u97F3\u6A21\u578B\u4F1A\u8FD4\u56DE\u7A7A\u7684 400\uFF0C\u8BED\u97F3\u8BF7\u6539\u7528\u4E0A\u4E00\u9879\u3002"
+    note: "这是 Token Plan 的聊天端点。用它调语音模型会返回空的 400，语音请改用上一项。"
   },
   {
     id: "custom",
-    name: "\u81EA\u5B9A\u4E49\uFF08\u5343\u95EEAI\u5E73\u53F0\u7B49\u517C\u5BB9\u6E20\u9053\uFF09",
+    name: "自定义（千问AI平台等兼容渠道）",
     transport: "openai-compatible",
     baseUrl: "",
-    keyPrefixHint: "\u4EFB\u610F",
-    note: "\u586B\u5165\u4EFB\u610F OpenAI \u517C\u5BB9\u7AEF\u70B9\u7684 Base URL\u3002"
+    keyPrefixHint: "任意",
+    note: "填入任意 OpenAI 兼容端点的 Base URL。"
   }
 ];
 var DEFAULT_TTS_MODEL_ID = "qwen3-tts-flash";
@@ -733,7 +733,7 @@ var DEFAULT_SETTINGS = {
 };
 function findPreset(id) {
   const found = PROVIDER_PRESETS.find((preset) => preset.id === id);
-  if (!found) throw new Error(`\u672A\u77E5\u7684\u6E20\u9053\u9884\u8BBE\uFF1A${id}`);
+  if (!found) throw new Error(`未知的渠道预设：${id}`);
   return found;
 }
 function mergeSettings(stored) {
@@ -745,8 +745,8 @@ var SECRET_KEY_NAME = "bailianApiKey";
 
 // src/settings/tab.ts
 var TRANSPORT_LABELS = {
-  "dashscope-native": "DashScope \u539F\u751F",
-  "openai-compatible": "OpenAI \u517C\u5BB9"
+  "dashscope-native": "DashScope 原生",
+  "openai-compatible": "OpenAI 兼容"
 };
 var EchoReadSettingTab = class extends import_obsidian3.PluginSettingTab {
   plugin;
@@ -761,7 +761,7 @@ var EchoReadSettingTab = class extends import_obsidian3.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "Echo Read \u8BBE\u7F6E" });
+    containerEl.createEl("h2", { text: "Echo Read 设置" });
     this.renderProvider();
     this.renderModels();
     this.renderCredentials();
@@ -771,8 +771,8 @@ var EchoReadSettingTab = class extends import_obsidian3.PluginSettingTab {
   // ---------- 接入渠道 ----------
   renderProvider() {
     const { containerEl } = this;
-    containerEl.createEl("h3", { text: "\u63A5\u5165\u6E20\u9053" });
-    new import_obsidian3.Setting(containerEl).setName("\u670D\u52A1\u5546").setDesc("\u5207\u6362\u6E20\u9053\u4F1A\u540C\u65F6\u66F4\u65B0\u534F\u8BAE\u4E0E\u63A5\u5165\u5730\u5740\uFF0C\u4E8C\u8005\u4ECD\u53EF\u624B\u52A8\u6539\u3002").addDropdown((dropdown) => {
+    containerEl.createEl("h3", { text: "接入渠道" });
+    new import_obsidian3.Setting(containerEl).setName("服务商").setDesc("切换渠道会同时更新协议与接入地址，二者仍可手动改。").addDropdown((dropdown) => {
       for (const preset2 of PROVIDER_PRESETS) {
         dropdown.addOption(preset2.id, preset2.name);
       }
@@ -788,14 +788,14 @@ var EchoReadSettingTab = class extends import_obsidian3.PluginSettingTab {
     });
     const preset = findPreset(this.plugin.settings.presetId);
     containerEl.createEl("p", { text: preset.note, cls: "setting-item-description" });
-    new import_obsidian3.Setting(containerEl).setName("\u534F\u8BAE").setDesc("DashScope \u539F\u751F\u8D70 multimodal-generation \u63A5\u53E3\uFF1BOpenAI \u517C\u5BB9\u8D70 chat/completions\u3002").addDropdown((dropdown) => {
+    new import_obsidian3.Setting(containerEl).setName("协议").setDesc("DashScope 原生走 multimodal-generation 接口；OpenAI 兼容走 chat/completions。").addDropdown((dropdown) => {
       dropdown.addOption("dashscope-native", TRANSPORT_LABELS["dashscope-native"]);
       dropdown.addOption("openai-compatible", TRANSPORT_LABELS["openai-compatible"]);
       dropdown.setValue(this.plugin.settings.transport).onChange(async (value) => {
         await this.plugin.updateSettings({ transport: value });
       });
     });
-    new import_obsidian3.Setting(containerEl).setName("\u63A5\u5165\u5730\u5740\uFF08Base URL\uFF09").setDesc("\u4E0D\u5305\u542B\u5177\u4F53\u8DEF\u5F84\uFF0C\u63D2\u4EF6\u4F1A\u6309\u534F\u8BAE\u81EA\u884C\u62FC\u63A5\u3002").addText(
+    new import_obsidian3.Setting(containerEl).setName("接入地址（Base URL）").setDesc("不包含具体路径，插件会按协议自行拼接。").addText(
       (text) => text.setPlaceholder("https://dashscope.aliyuncs.com").setValue(this.plugin.settings.baseUrl).onChange(async (value) => {
         await this.plugin.updateSettings({ baseUrl: value.trim() });
       })
@@ -804,13 +804,13 @@ var EchoReadSettingTab = class extends import_obsidian3.PluginSettingTab {
   // ---------- 模型 ----------
   renderModels() {
     const { containerEl } = this;
-    containerEl.createEl("h3", { text: "\u6A21\u578B" });
-    new import_obsidian3.Setting(containerEl).setName("\u8BED\u97F3\u8BC6\u522B\u6A21\u578B").setDesc("\u9ED8\u8BA4 qwen-audio-3.0-asr-flash\uFF080.00022 \u5143/\u79D2\uFF09\u3002").addText(
+    containerEl.createEl("h3", { text: "模型" });
+    new import_obsidian3.Setting(containerEl).setName("语音识别模型").setDesc("默认 qwen-audio-3.0-asr-flash（0.00022 元/秒）。").addText(
       (text) => text.setValue(this.plugin.settings.asrModel).onChange(async (value) => {
         await this.plugin.updateSettings({ asrModel: value.trim() });
       })
     );
-    new import_obsidian3.Setting(containerEl).setName("\u8BED\u97F3\u5408\u6210\u6A21\u578B").setDesc("\u9ED8\u8BA4 qwen3-tts-flash\uFF080.8 \u5143/\u4E07\u5B57\u7B26\uFF09\u3002\u5F53\u524D\u7248\u672C\u6717\u8BFB\u4ECD\u8D70\u7CFB\u7EDF\u8BED\u97F3\uFF0C\u6B64\u9879\u4E3A\u540E\u7EED\u4E91\u5408\u6210\u9884\u7559\u3002").addText(
+    new import_obsidian3.Setting(containerEl).setName("语音合成模型").setDesc("默认 qwen3-tts-flash（0.8 元/万字符）。当前版本朗读仍走系统语音，此项为后续云合成预留。").addText(
       (text) => text.setValue(this.plugin.settings.ttsModel).onChange(async (value) => {
         await this.plugin.updateSettings({ ttsModel: value.trim() });
       })
@@ -819,46 +819,46 @@ var EchoReadSettingTab = class extends import_obsidian3.PluginSettingTab {
   // ---------- 凭据 ----------
   renderCredentials() {
     const { containerEl } = this;
-    containerEl.createEl("h3", { text: "\u51ED\u636E" });
+    containerEl.createEl("h3", { text: "凭据" });
     const preset = findPreset(this.plugin.settings.presetId);
     const status = containerEl.createEl("p", { cls: "setting-item-description" });
     void this.renderCredentialStatus(status, preset.keyPrefixHint);
-    new import_obsidian3.Setting(containerEl).setName("API Key").setDesc(`\u8BE5\u6E20\u9053\u7684 Key \u4EE5 ${preset.keyPrefixHint} \u5F00\u5934\u3002Key \u4F1A\u7528\u4E0B\u9762\u7684\u53E3\u4EE4\u52A0\u5BC6\u540E\u5B58\u5165 vault\u3002`).addText((text) => {
+    new import_obsidian3.Setting(containerEl).setName("API Key").setDesc(`该渠道的 Key 以 ${preset.keyPrefixHint} 开头。Key 会用下面的口令加密后存入 vault。`).addText((text) => {
       text.inputEl.type = "password";
-      text.setPlaceholder("sk-\u2026").onChange((value) => {
+      text.setPlaceholder("sk-…").onChange((value) => {
         this.keyDraft = value;
       });
     });
-    new import_obsidian3.Setting(containerEl).setName("\u52A0\u5BC6\u53E3\u4EE4").setDesc("\u53E3\u4EE4\u672C\u8EAB\u4E0D\u4F1A\u88AB\u4FDD\u5B58\uFF0C\u5FD8\u8BB0\u53E3\u4EE4\u53EA\u80FD\u91CD\u65B0\u586B\u5199\u4E00\u6B21 API Key\u3002").addText((text) => {
+    new import_obsidian3.Setting(containerEl).setName("加密口令").setDesc("口令本身不会被保存，忘记口令只能重新填写一次 API Key。").addText((text) => {
       text.inputEl.type = "password";
-      text.setPlaceholder("\u672C\u8BBE\u5907\u53E3\u4EE4").onChange((value) => {
+      text.setPlaceholder("本设备口令").onChange((value) => {
         this.passphrase = value;
       });
     });
-    new import_obsidian3.Setting(containerEl).setName("\u4FDD\u5B58\u5E76\u89E3\u9501").setDesc("\u52A0\u5BC6\u5199\u5165 _lingo/secrets.json\uFF0C\u5E76\u628A\u660E\u6587\u53EA\u7559\u5728\u5185\u5B58\u4E2D\u3002").addButton(
-      (button) => button.setButtonText("\u4FDD\u5B58 Key").setCta().onClick(async () => {
+    new import_obsidian3.Setting(containerEl).setName("保存并解锁").setDesc("加密写入 _lingo/secrets.json，并把明文只留在内存中。").addButton(
+      (button) => button.setButtonText("保存 Key").setCta().onClick(async () => {
         if (!this.passphrase) {
-          new import_obsidian3.Notice("\u8BF7\u5148\u586B\u5199\u52A0\u5BC6\u53E3\u4EE4\u3002");
+          new import_obsidian3.Notice("请先填写加密口令。");
           return;
         }
         if (!this.keyDraft) {
-          new import_obsidian3.Notice("\u8BF7\u5148\u586B\u5199 API Key\u3002");
+          new import_obsidian3.Notice("请先填写 API Key。");
           return;
         }
         try {
           await saveSecret(this.app, SECRET_KEY_NAME, this.keyDraft, this.passphrase);
           this.plugin.unlockedApiKey = this.keyDraft;
           this.keyDraft = "";
-          new import_obsidian3.Notice("\u5DF2\u52A0\u5BC6\u4FDD\u5B58\u5E76\u89E3\u9501\u3002");
+          new import_obsidian3.Notice("已加密保存并解锁。");
           this.display();
         } catch (error) {
-          new import_obsidian3.Notice(`\u4FDD\u5B58\u5931\u8D25\uFF1A${messageOf(error)}`);
+          new import_obsidian3.Notice(`保存失败：${messageOf(error)}`);
         }
       })
     ).addButton(
-      (button) => button.setButtonText("\u4EC5\u89E3\u9501").onClick(async () => {
+      (button) => button.setButtonText("仅解锁").onClick(async () => {
         if (!this.passphrase) {
-          new import_obsidian3.Notice("\u8BF7\u5148\u586B\u5199\u52A0\u5BC6\u53E3\u4EE4\u3002");
+          new import_obsidian3.Notice("请先填写加密口令。");
           return;
         }
         try {
@@ -867,17 +867,17 @@ var EchoReadSettingTab = class extends import_obsidian3.PluginSettingTab {
             SECRET_KEY_NAME,
             this.passphrase
           );
-          new import_obsidian3.Notice("\u5DF2\u89E3\u9501\u3002");
+          new import_obsidian3.Notice("已解锁。");
           this.display();
         } catch {
-          new import_obsidian3.Notice("\u89E3\u9501\u5931\u8D25\uFF1A\u53E3\u4EE4\u4E0D\u6B63\u786E\uFF0C\u6216\u5C1A\u672A\u4FDD\u5B58\u8FC7 Key\u3002");
+          new import_obsidian3.Notice("解锁失败：口令不正确，或尚未保存过 Key。");
         }
       })
     ).addButton(
-      (button) => button.setButtonText("\u6E05\u9664").setWarning().onClick(async () => {
+      (button) => button.setButtonText("清除").setWarning().onClick(async () => {
         await deleteSecret(this.app, SECRET_KEY_NAME);
         this.plugin.unlockedApiKey = void 0;
-        new import_obsidian3.Notice("\u5DF2\u6E05\u9664\u4FDD\u5B58\u7684 Key\u3002");
+        new import_obsidian3.Notice("已清除保存的 Key。");
         this.display();
       })
     );
@@ -886,30 +886,30 @@ var EchoReadSettingTab = class extends import_obsidian3.PluginSettingTab {
     const saved = await hasSecret(this.app, SECRET_KEY_NAME);
     const unlocked = this.plugin.unlockedApiKey !== void 0;
     element.setText(
-      saved ? unlocked ? "\u72B6\u6001\uFF1A\u5DF2\u4FDD\u5B58\uFF0C\u4E14\u5F53\u524D\u5DF2\u89E3\u9501\u3002" : "\u72B6\u6001\uFF1A\u5DF2\u4FDD\u5B58\uFF0C\u4F46\u672A\u89E3\u9501 \u2014\u2014 \u8BF7\u586B\u5199\u53E3\u4EE4\u540E\u70B9\u300C\u4EC5\u89E3\u9501\u300D\u3002" : `\u72B6\u6001\uFF1A\u5C1A\u672A\u4FDD\u5B58\u3002\u8BE5\u6E20\u9053\u7684 Key \u4EE5 ${keyPrefixHint} \u5F00\u5934\u3002`
+      saved ? unlocked ? "状态：已保存，且当前已解锁。" : "状态：已保存，但未解锁 —— 请填写口令后点「仅解锁」。" : `状态：尚未保存。该渠道的 Key 以 ${keyPrefixHint} 开头。`
     );
     const key = this.plugin.unlockedApiKey;
     if (!key) return;
     element.setText(
-      `${element.getText()} \u5F53\u524D Key \u7C7B\u578B\uFF1A${describeApiKeyKind(classifyApiKey(key))}\u3002`
+      `${element.getText()} 当前 Key 类型：${describeApiKeyKind(classifyApiKey(key))}。`
     );
     const mismatch = describeKeyEndpointMismatch(key, this.plugin.settings.baseUrl);
     if (mismatch) {
       element.createEl("br");
-      element.createEl("strong", { text: `\u26A0 ${mismatch}` });
+      element.createEl("strong", { text: `⚠ ${mismatch}` });
     }
   }
   // ---------- 朗读 ----------
   renderSpeech() {
     const { containerEl } = this;
-    containerEl.createEl("h3", { text: "\u6717\u8BFB" });
-    new import_obsidian3.Setting(containerEl).setName("\u8BED\u901F").setDesc("\u7CFB\u7EDF\u8BED\u97F3\u7684\u6717\u8BFB\u901F\u5EA6\u3002").addSlider(
+    containerEl.createEl("h3", { text: "朗读" });
+    new import_obsidian3.Setting(containerEl).setName("语速").setDesc("系统语音的朗读速度。").addSlider(
       (slider) => slider.setLimits(0.5, 1.5, 0.05).setValue(this.plugin.settings.speechRate).setDynamicTooltip().onChange(async (value) => {
         await this.plugin.updateSettings({ speechRate: value });
       })
     );
-    new import_obsidian3.Setting(containerEl).setName("\u7CFB\u7EDF\u97F3\u8272").setDesc("\u7559\u7A7A\u5219\u4F7F\u7528\u7CFB\u7EDF\u9ED8\u8BA4\u82F1\u8BED\u97F3\u8272\u3002\u5217\u8868\u7531\u7CFB\u7EDF\u63D0\u4F9B\uFF0C\u52A0\u8F7D\u53EF\u80FD\u9700\u8981\u4E00\u70B9\u65F6\u95F4\u3002").addDropdown((dropdown) => {
-      dropdown.addOption("", "\u7CFB\u7EDF\u9ED8\u8BA4");
+    new import_obsidian3.Setting(containerEl).setName("系统音色").setDesc("留空则使用系统默认英语音色。列表由系统提供，加载可能需要一点时间。").addDropdown((dropdown) => {
+      dropdown.addOption("", "系统默认");
       void loadVoices().then((voices) => {
         const english = voices.filter((voice) => voice.lang.toLowerCase().startsWith("en"));
         for (const voice of english) {
@@ -925,35 +925,35 @@ var EchoReadSettingTab = class extends import_obsidian3.PluginSettingTab {
   // ---------- 诊断 ----------
   renderDiagnostics() {
     const { containerEl } = this;
-    containerEl.createEl("h3", { text: "\u8BCA\u65AD" });
-    const endpoint = this.plugin.settings.baseUrl ? buildEndpoint(this.plugin.settings.baseUrl, this.plugin.settings.transport) : "\uFF08\u5C1A\u672A\u586B\u5199\u63A5\u5165\u5730\u5740\uFF09";
+    containerEl.createEl("h3", { text: "诊断" });
+    const endpoint = this.plugin.settings.baseUrl ? buildEndpoint(this.plugin.settings.baseUrl, this.plugin.settings.transport) : "（尚未填写接入地址）";
     containerEl.createEl("p", {
-      text: `\u5B9E\u9645\u8BF7\u6C42\u5730\u5740\uFF1A${endpoint}`,
+      text: `实际请求地址：${endpoint}`,
       cls: "setting-item-description"
     });
-    new import_obsidian3.Setting(containerEl).setName("\u6D4B\u8BD5\u8FDE\u63A5").setDesc(
-      "\u53D1\u9001 1.5 \u79D2\u9759\u97F3\u97F3\u9891\u505A\u4E00\u6B21\u771F\u5B9E\u8BC6\u522B\u8BF7\u6C42\u3002\u7528\u9759\u97F3\u662F\u56E0\u4E3A\u4E0D\u9700\u8981\u9EA6\u514B\u98CE\uFF0C\u4F46\u5B83\u4E5F\u53EF\u80FD\u88AB\u670D\u52A1\u7AEF\u5224\u4E3A\u300C\u6CA1\u6709\u8BED\u97F3\u300D\u2014\u2014\u90A3\u79CD\u5931\u8D25\u4E0D\u4EE3\u8868\u914D\u7F6E\u6709\u95EE\u9898\u3002"
+    new import_obsidian3.Setting(containerEl).setName("测试连接").setDesc(
+      "发送 1.5 秒静音音频做一次真实识别请求。用静音是因为不需要麦克风，但它也可能被服务端判为「没有语音」——那种失败不代表配置有问题。"
     ).addButton(
-      (button) => button.setButtonText("\u5F00\u59CB\u6D4B\u8BD5").onClick(async () => {
+      (button) => button.setButtonText("开始测试").onClick(async () => {
         button.setDisabled(true);
-        button.setButtonText("\u6D4B\u8BD5\u4E2D\u2026");
+        button.setButtonText("测试中…");
         await this.runWithDiagnostics(
           button,
-          "\u5F00\u59CB\u6D4B\u8BD5",
-          "\u6D4B\u8BD5\u4E2D\u2026",
+          "开始测试",
+          "测试中…",
           () => this.runConnectionTest()
         );
       })
     );
-    new import_obsidian3.Setting(containerEl).setName("\u5217\u51FA\u53EF\u7528\u6A21\u578B").setDesc(
-      "\u8C03\u7528\u8BE5\u6E20\u9053\u7684 GET /models\uFF0C\u786E\u8BA4\u67D0\u4E2A\u6A21\u578B ID \u5728\u672C\u6E20\u9053\u662F\u5426\u771F\u7684\u5B58\u5728\u3002\u5B8C\u6574\u5217\u8868\u4F1A\u6253\u5370\u5230\u63A7\u5236\u53F0\uFF08Ctrl+Shift+I\uFF09\u3002"
+    new import_obsidian3.Setting(containerEl).setName("列出可用模型").setDesc(
+      "调用该渠道的 GET /models，确认某个模型 ID 在本渠道是否真的存在。完整列表会打印到控制台（Ctrl+Shift+I）。"
     ).addButton(
-      (button) => button.setButtonText("\u83B7\u53D6\u5217\u8868").onClick(async () => {
+      (button) => button.setButtonText("获取列表").onClick(async () => {
         button.setDisabled(true);
-        button.setButtonText("\u83B7\u53D6\u4E2D\u2026");
-        await this.runWithDiagnostics(button, "\u83B7\u53D6\u5217\u8868", "\u83B7\u53D6\u4E2D\u2026", async () => {
+        button.setButtonText("获取中…");
+        await this.runWithDiagnostics(button, "获取列表", "获取中…", async () => {
           const ids = await this.runModelList();
-          return `\u5171 ${ids.length} \u4E2A\u6A21\u578B\uFF1A
+          return `共 ${ids.length} 个模型：
 ${ids.join("\n")}`;
         });
       })
@@ -966,40 +966,41 @@ ${ids.join("\n")}`;
     this.diagnosticEl.style.fontSize = "12px";
     this.diagnosticEl.style.lineHeight = "1.5";
     this.diagnosticEl.setText(this.diagnosticLines.join("\n"));
-    new import_obsidian3.Setting(containerEl).setName("\u590D\u5236\u8BCA\u65AD\u4FE1\u606F").setDesc("\u628A\u4E0A\u9762\u7684\u5185\u5BB9\u590D\u5236\u5230\u526A\u8D34\u677F\uFF0C\u4FBF\u4E8E\u6392\u67E5\u3002").addButton(
-      (button) => button.setButtonText("\u590D\u5236").onClick(async () => {
+    new import_obsidian3.Setting(containerEl).setName("复制诊断信息").setDesc("把上面的内容复制到剪贴板，便于排查。").addButton(
+      (button) => button.setButtonText("复制").onClick(async () => {
         try {
           await navigator.clipboard.writeText(this.diagnosticLines.join("\n"));
-          new import_obsidian3.Notice("\u5DF2\u590D\u5236\u3002");
+          new import_obsidian3.Notice("已复制。");
         } catch {
-          new import_obsidian3.Notice("\u590D\u5236\u5931\u8D25\uFF0C\u8BF7\u624B\u52A8\u9009\u4E2D\u4E0A\u9762\u7684\u6587\u672C\u3002");
+          new import_obsidian3.Notice("复制失败，请手动选中上面的文本。");
         }
       })
     );
   }
   async runWithDiagnostics(button, idleLabel, busyLabel, action) {
     this.diagnosticLines = [];
-    this.appendDiagnostic(`\u65F6\u95F4\uFF1A${(/* @__PURE__ */ new Date()).toLocaleString()}`);
-    this.appendDiagnostic(`\u534F\u8BAE\uFF1A${this.plugin.settings.transport}`);
-    this.appendDiagnostic(`\u6A21\u578B\uFF1A${this.plugin.settings.asrModel}`);
+    this.appendDiagnostic(`构建时间：${"2026-10-04T04:50:07.549Z"}`);
+    this.appendDiagnostic(`时间：${(/* @__PURE__ */ new Date()).toLocaleString()}`);
+    this.appendDiagnostic(`协议：${this.plugin.settings.transport}`);
+    this.appendDiagnostic(`模型：${this.plugin.settings.asrModel}`);
     this.appendDiagnostic(
-      `Key\uFF1A${this.plugin.unlockedApiKey ? "\u5DF2\u89E3\u9501" : "\u672A\u89E3\u9501\uFF08\u8BF7\u5148\u70B9\u300C\u4EC5\u89E3\u9501\u300D\uFF09"}`
+      `Key：${this.plugin.unlockedApiKey ? "已解锁" : "未解锁（请先点「仅解锁」）"}`
     );
     const key = this.plugin.unlockedApiKey;
     if (key) {
-      this.appendDiagnostic(`Key \u7C7B\u578B\uFF1A${describeApiKeyKind(classifyApiKey(key))}`);
+      this.appendDiagnostic(`Key 类型：${describeApiKeyKind(classifyApiKey(key))}`);
       const mismatch = describeKeyEndpointMismatch(key, this.plugin.settings.baseUrl);
-      if (mismatch) this.appendDiagnostic(`\u26A0 ${mismatch}`);
+      if (mismatch) this.appendDiagnostic(`⚠ ${mismatch}`);
     }
     try {
       const result = await action();
-      this.appendDiagnostic("\u7ED3\u679C\uFF1A\u6210\u529F");
+      this.appendDiagnostic("结果：成功");
       this.appendDiagnostic(result);
-      new import_obsidian3.Notice("\u6210\u529F\uFF0C\u8BE6\u89C1\u4E0B\u65B9\u8BCA\u65AD\u4FE1\u606F\u3002", 8e3);
+      new import_obsidian3.Notice("成功，详见下方诊断信息。", 8e3);
     } catch (error) {
-      this.appendDiagnostic("\u7ED3\u679C\uFF1A\u5931\u8D25");
+      this.appendDiagnostic("结果：失败");
       this.appendDiagnostic(messageOf(error));
-      new import_obsidian3.Notice("\u5931\u8D25\uFF0C\u8BE6\u89C1\u4E0B\u65B9\u8BCA\u65AD\u4FE1\u606F\u3002", 8e3);
+      new import_obsidian3.Notice("失败，详见下方诊断信息。", 8e3);
     } finally {
       button.setDisabled(false);
       button.setButtonText(idleLabel);
@@ -1011,15 +1012,15 @@ ${ids.join("\n")}`;
   }
   async runConnectionTest() {
     const apiKey = this.plugin.unlockedApiKey;
-    if (!apiKey) throw new Error("\u5C1A\u672A\u89E3\u9501 API Key\u3002");
-    if (!this.plugin.settings.baseUrl) throw new Error("\u5C1A\u672A\u586B\u5199\u63A5\u5165\u5730\u5740\u3002");
+    if (!apiKey) throw new Error("尚未解锁 API Key。");
+    if (!this.plugin.settings.baseUrl) throw new Error("尚未填写接入地址。");
     const silence = new Float32Array(16e3 * 1.5);
     const wav = encodeWav(silence, 16e3);
     const dataUri = bytesToDataUri(new Uint8Array(wav), "audio/wav");
-    this.appendDiagnostic(`\u8BF7\u6C42\u5730\u5740\uFF1A${buildEndpoint(this.plugin.settings.baseUrl, this.plugin.settings.transport)}`);
-    this.appendDiagnostic(`\u97F3\u9891\uFF1A1.5 \u79D2\u9759\u97F3 WAV\uFF0Cbase64 \u540E ${Math.round(dataUri.length / 1024)} KB`);
+    this.appendDiagnostic(`请求地址：${buildEndpoint(this.plugin.settings.baseUrl, this.plugin.settings.transport)}`);
+    this.appendDiagnostic(`音频：1.5 秒静音 WAV，base64 后 ${Math.round(dataUri.length / 1024)} KB`);
     this.appendDiagnostic(
-      `\u8BF7\u6C42\u4F53\u9884\u89C8\uFF1A
+      `请求体预览：
 ${previewRequestBody(
         {
           transport: this.plugin.settings.transport,
@@ -1040,8 +1041,8 @@ ${previewRequestBody(
   }
   async runModelList() {
     const apiKey = this.plugin.unlockedApiKey;
-    if (!apiKey) throw new Error("\u5C1A\u672A\u89E3\u9501 API Key\u3002");
-    if (!this.plugin.settings.baseUrl) throw new Error("\u5C1A\u672A\u586B\u5199\u63A5\u5165\u5730\u5740\u3002");
+    if (!apiKey) throw new Error("尚未解锁 API Key。");
+    if (!this.plugin.settings.baseUrl) throw new Error("尚未填写接入地址。");
     return listModels({ baseUrl: this.plugin.settings.baseUrl, apiKey });
   }
 };

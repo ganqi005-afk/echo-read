@@ -354,6 +354,7 @@ export class EchoReadSettingTab extends PluginSettingTab {
     action: () => Promise<string>,
   ): Promise<void> {
     this.diagnosticLines = [];
+    this.appendDiagnostic(`构建时间：${__BUILD_TIME__}`);
     this.appendDiagnostic(`时间：${new Date().toLocaleString()}`);
     this.appendDiagnostic(`协议：${this.plugin.settings.transport}`);
     this.appendDiagnostic(`模型：${this.plugin.settings.asrModel}`);
