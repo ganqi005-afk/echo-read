@@ -998,6 +998,76 @@ async function writeCachedAudio(app, path, bytes) {
   if (!await adapter.exists(AUDIO_CACHE_DIR)) await adapter.mkdir(AUDIO_CACHE_DIR);
   await adapter.writeBinary(path, bytes);
 }
+function summarizeCache(entries) {
+  return {
+    count: entries.length,
+    bytes: entries.reduce((total, entry) => total + entry.size, 0)
+  };
+}
+function selectForRemoval(entries, options) {
+  const doomed = /* @__PURE__ */ new Set();
+  const DAY_MS = 24 * 60 * 60 * 1e3;
+  if (options.maxAgeDays > 0) {
+    const cutoff = options.now - options.maxAgeDays * DAY_MS;
+    for (const entry of entries) {
+      if (entry.mtime < cutoff) doomed.add(entry.path);
+    }
+  }
+  const survivors = entries.filter((entry) => !doomed.has(entry.path));
+  let total = survivors.reduce((sum, entry) => sum + entry.size, 0);
+  if (options.maxBytes > 0 && total > options.maxBytes) {
+    for (const entry of [...survivors].sort((a, b) => a.mtime - b.mtime)) {
+      if (total <= options.maxBytes) break;
+      doomed.add(entry.path);
+      total -= entry.size;
+    }
+  }
+  return entries.filter((entry) => doomed.has(entry.path));
+}
+async function listAudioCache(app) {
+  const adapter = app.vault.adapter;
+  if (!await adapter.exists(AUDIO_CACHE_DIR)) return [];
+  let files = [];
+  try {
+    files = (await adapter.list(AUDIO_CACHE_DIR)).files;
+  } catch {
+    return [];
+  }
+  const entries = [];
+  for (const file of files) {
+    try {
+      const stat = await adapter.stat(file);
+      if (stat) entries.push({ path: file, size: stat.size, mtime: stat.mtime });
+    } catch {
+    }
+  }
+  return entries;
+}
+async function removeCacheEntries(app, entries) {
+  const adapter = app.vault.adapter;
+  let removed = 0;
+  for (const entry of entries) {
+    try {
+      await adapter.remove(entry.path);
+      removed++;
+    } catch {
+    }
+  }
+  return removed;
+}
+async function clearAudioCache(app) {
+  return removeCacheEntries(app, await listAudioCache(app));
+}
+async function pruneAudioCache(app, options) {
+  const entries = await listAudioCache(app);
+  const doomed = selectForRemoval(entries, { ...options, now: Date.now() });
+  return removeCacheEntries(app, doomed);
+}
+function formatBytes(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
 
 // src/reader/actions.ts
 async function speakSentence(app, plugin, text) {
@@ -1787,7 +1857,9 @@ var DEFAULT_SETTINGS = {
   llmModel: "qwen3.8-flash",
   voiceURI: "",
   speechRate: 1,
-  speakOnClick: true
+  speakOnClick: true,
+  audioCacheMaxAgeDays: 30,
+  audioCacheMaxBytes: 200 * 1024 * 1024
 };
 function mergeSettings(stored) {
   const merged = { ...DEFAULT_SETTINGS, ...stored ?? {} };
@@ -1827,6 +1899,7 @@ var EchoReadSettingTab = class extends import_obsidian5.PluginSettingTab {
     this.renderTts();
     this.renderLlm();
     this.renderReading();
+    this.renderCache();
     this.renderDiagnostics();
   }
   // ---------------- 密钥 ----------------
@@ -2049,6 +2122,56 @@ var EchoReadSettingTab = class extends import_obsidian5.PluginSettingTab {
     });
   }
   // ---------------- 诊断 ----------------
+  // ---------------- 缓存 ----------------
+  renderCache() {
+    const { containerEl } = this;
+    containerEl.createEl("h3", { text: "示范音缓存" });
+    containerEl.createEl("p", {
+      cls: "setting-item-description",
+      text: "合成过的句子按「模型 + 音色 + 格式 + 文本」缓存在 _lingo/audio/。同一句第二次朗读不再产生费用 —— 这是这个项目最有效的省钱手段。"
+    });
+    const stats = new import_obsidian5.Setting(containerEl).setName("当前占用").setDesc("统计中…");
+    void this.refreshCacheStats(stats);
+    new import_obsidian5.Setting(containerEl).setName("自动清理天数").setDesc("超过这个天数的缓存会在插件启动时删除。填 0 表示不按天数清理。").addText(
+      (text) => text.setValue(String(this.plugin.settings.audioCacheMaxAgeDays)).onChange(async (value) => {
+        const days = Number(value);
+        if (!Number.isFinite(days) || days < 0) return;
+        await this.plugin.updateSettings({ audioCacheMaxAgeDays: Math.floor(days) });
+      })
+    );
+    new import_obsidian5.Setting(containerEl).setName("体积上限（MB）").setDesc("超出后从**最旧的**开始删，最近用过的句子优先留下。填 0 表示不限制。").addText(
+      (text) => text.setValue(String(Math.round(this.plugin.settings.audioCacheMaxBytes / 1024 / 1024))).onChange(async (value) => {
+        const mb = Number(value);
+        if (!Number.isFinite(mb) || mb < 0) return;
+        await this.plugin.updateSettings({ audioCacheMaxBytes: Math.round(mb * 1024 * 1024) });
+      })
+    );
+    new import_obsidian5.Setting(containerEl).setName("立即清理").setDesc("按上面的规则淘汰一次。").addButton(
+      (button) => button.setButtonText("执行清理").onClick(async () => {
+        const removed = await pruneAudioCache(this.app, {
+          maxAgeDays: this.plugin.settings.audioCacheMaxAgeDays,
+          maxBytes: this.plugin.settings.audioCacheMaxBytes
+        });
+        new import_obsidian5.Notice(removed > 0 ? `已清理 ${removed} 个缓存文件。` : "没有需要清理的缓存。");
+        this.display();
+      })
+    );
+    new import_obsidian5.Setting(containerEl).setName("清空缓存").setDesc(
+      "删除全部缓存。删掉**只是下次重新生成**，不会丢失任何笔记内容 —— 代价是那些句子要重新付一次合成费。"
+    ).addButton(
+      (button) => button.setButtonText("全部清空").setWarning().onClick(async () => {
+        const removed = await clearAudioCache(this.app);
+        new import_obsidian5.Notice(`已清空 ${removed} 个缓存文件。`);
+        this.display();
+      })
+    );
+  }
+  async refreshCacheStats(setting) {
+    const stats = summarizeCache(await listAudioCache(this.app));
+    setting.setDesc(
+      stats.count === 0 ? "还没有缓存。朗读过的句子会自动存到这里。" : `已缓存 ${stats.count} 句，占用 ${formatBytes(stats.bytes)}。这些句子重读不再计费。`
+    );
+  }
   renderDiagnostics() {
     const { containerEl } = this;
     containerEl.createEl("h3", { text: "诊断" });
@@ -2147,7 +2270,7 @@ ${ids.join("\n")}`;
   }
   async runWithDiagnostics(button, idleLabel, busyLabel, context, action) {
     this.diagnosticLines = [];
-    this.appendDiagnostic(`构建时间：${"2026-10-04T06:49:20.191Z"}`);
+    this.appendDiagnostic(`构建时间：${"2026-10-04T07:00:08.524Z"}`);
     this.appendDiagnostic(`时间：${(/* @__PURE__ */ new Date()).toLocaleString()}`);
     for (const line of context) this.appendDiagnostic(line);
     try {
@@ -2283,6 +2406,12 @@ var EchoReadPlugin = class extends import_obsidian6.Plugin {
       callback: () => this.openRecorder()
     });
     new ReadingController(this.app, this).register();
+    void pruneAudioCache(this.app, {
+      maxAgeDays: this.settings.audioCacheMaxAgeDays,
+      maxBytes: this.settings.audioCacheMaxBytes
+    }).then((removed) => {
+      if (removed > 0) console.log(`[Echo Read] 已清理 ${removed} 个缓存音频`);
+    }).catch((error) => console.error("[Echo Read] 清理缓存失败", error));
     console.log("Echo Read loaded");
   }
   openRecorder() {

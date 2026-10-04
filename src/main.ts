@@ -2,6 +2,7 @@ import { Plugin } from "obsidian";
 import { RecorderModal } from "./recorder-modal";
 import { ReadingController } from "./reader/controller";
 import { loadKeyValues } from "./settings/store";
+import { pruneAudioCache } from "./store/audio-cache";
 import { EchoReadSettingTab } from "./settings/tab";
 import { DEFAULT_SETTINGS, mergeSettings, type EchoReadSettings } from "./settings/types";
 
@@ -25,6 +26,17 @@ export default class EchoReadPlugin extends Plugin {
     });
     // 阅读视图交互：点句聚焦 + 底部操作条
     new ReadingController(this.app, this).register();
+
+    // 启动时按设置淘汰过期或超量的示范音缓存，避免无限增长
+    void pruneAudioCache(this.app, {
+      maxAgeDays: this.settings.audioCacheMaxAgeDays,
+      maxBytes: this.settings.audioCacheMaxBytes,
+    })
+      .then((removed) => {
+        if (removed > 0) console.log(`[Echo Read] 已清理 ${removed} 个缓存音频`);
+      })
+      .catch((error) => console.error("[Echo Read] 清理缓存失败", error));
+
     console.log("Echo Read loaded");
   }
 

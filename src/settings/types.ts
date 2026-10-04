@@ -106,6 +106,13 @@ export interface EchoReadSettings {
   speechRate: number;
   /** 点一句就直接朗读，省掉"先选中再点按钮"的那一步。 */
   speakOnClick: boolean;
+
+  /**
+   * 示范音缓存策略。0 表示不限制。
+   * 缓存就是钱 —— 同一句第二次朗读不再计费，所以清理规则要可见可控。
+   */
+  audioCacheMaxAgeDays: number;
+  audioCacheMaxBytes: number;
 }
 
 export const DEFAULT_SETTINGS: EchoReadSettings = {
@@ -131,6 +138,8 @@ export const DEFAULT_SETTINGS: EchoReadSettings = {
   voiceURI: "",
   speechRate: 1,
   speakOnClick: true,
+  audioCacheMaxAgeDays: 30,
+  audioCacheMaxBytes: 200 * 1024 * 1024,
 };
 
 export function mergeSettings(

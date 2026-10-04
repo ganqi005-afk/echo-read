@@ -14,7 +14,16 @@ import {
 import { describeProbeOutcome } from "../speech/key-probe";
 import { guessMimeType, previewTtsBody, synthesizeSpeech } from "../speech/tts-client";
 import { loadVoices } from "../speech/tts-system";
-import { audioCachePath, readCachedAudio, writeCachedAudio } from "../store/audio-cache";
+import {
+  audioCachePath,
+  clearAudioCache,
+  formatBytes,
+  listAudioCache,
+  pruneAudioCache,
+  readCachedAudio,
+  summarizeCache,
+  writeCachedAudio,
+} from "../store/audio-cache";
 import { deleteTestSample, hasTestSample, loadTestSample } from "../store/sample";
 import {
   describeApiKeyKind,
@@ -70,6 +79,7 @@ export class EchoReadSettingTab extends PluginSettingTab {
     this.renderTts();
     this.renderLlm();
     this.renderReading();
+    this.renderCache();
     this.renderDiagnostics();
   }
 
@@ -375,6 +385,82 @@ export class EchoReadSettingTab extends PluginSettingTab {
   }
 
   // ---------------- 诊断 ----------------
+
+  // ---------------- 缓存 ----------------
+
+  private renderCache(): void {
+    const { containerEl } = this;
+    containerEl.createEl("h3", { text: "示范音缓存" });
+    containerEl.createEl("p", {
+      cls: "setting-item-description",
+      text:
+        "合成过的句子按「模型 + 音色 + 格式 + 文本」缓存在 _lingo/audio/。" +
+        "同一句第二次朗读不再产生费用 —— 这是这个项目最有效的省钱手段。",
+    });
+
+    const stats = new Setting(containerEl).setName("当前占用").setDesc("统计中…");
+    void this.refreshCacheStats(stats);
+
+    new Setting(containerEl)
+      .setName("自动清理天数")
+      .setDesc("超过这个天数的缓存会在插件启动时删除。填 0 表示不按天数清理。")
+      .addText((text) =>
+        text.setValue(String(this.plugin.settings.audioCacheMaxAgeDays)).onChange(async (value) => {
+          const days = Number(value);
+          if (!Number.isFinite(days) || days < 0) return;
+          await this.plugin.updateSettings({ audioCacheMaxAgeDays: Math.floor(days) });
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName("体积上限（MB）")
+      .setDesc("超出后从**最旧的**开始删，最近用过的句子优先留下。填 0 表示不限制。")
+      .addText((text) =>
+        text.setValue(String(Math.round(this.plugin.settings.audioCacheMaxBytes / 1024 / 1024)))
+          .onChange(async (value) => {
+            const mb = Number(value);
+            if (!Number.isFinite(mb) || mb < 0) return;
+            await this.plugin.updateSettings({ audioCacheMaxBytes: Math.round(mb * 1024 * 1024) });
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("立即清理")
+      .setDesc("按上面的规则淘汰一次。")
+      .addButton((button) =>
+        button.setButtonText("执行清理").onClick(async () => {
+          const removed = await pruneAudioCache(this.app, {
+            maxAgeDays: this.plugin.settings.audioCacheMaxAgeDays,
+            maxBytes: this.plugin.settings.audioCacheMaxBytes,
+          });
+          new Notice(removed > 0 ? `已清理 ${removed} 个缓存文件。` : "没有需要清理的缓存。");
+          this.display();
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName("清空缓存")
+      .setDesc(
+        "删除全部缓存。删掉**只是下次重新生成**，不会丢失任何笔记内容 —— " +
+          "代价是那些句子要重新付一次合成费。",
+      )
+      .addButton((button) =>
+        button.setButtonText("全部清空").setWarning().onClick(async () => {
+          const removed = await clearAudioCache(this.app);
+          new Notice(`已清空 ${removed} 个缓存文件。`);
+          this.display();
+        }),
+      );
+  }
+
+  private async refreshCacheStats(setting: { setDesc(value: string): unknown }): Promise<void> {
+    const stats = summarizeCache(await listAudioCache(this.app));
+    setting.setDesc(
+      stats.count === 0
+        ? "还没有缓存。朗读过的句子会自动存到这里。"
+        : `已缓存 ${stats.count} 句，占用 ${formatBytes(stats.bytes)}。这些句子重读不再计费。`,
+    );
+  }
 
   private renderDiagnostics(): void {
     const { containerEl } = this;
