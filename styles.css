@@ -49,3 +49,121 @@
 .echo-read-bar-result:empty {
   display: none;
 }
+
+/* ---------------- 问 AI 弹窗 ----------------
+ * 克制的 Apple 风：大圆角、分组留白、触控目标 ≥ 44px。
+ * 颜色仍然全部取自 Obsidian 变量，所以深色模式下不会变成一块突兀的白。
+ */
+
+.echo-read-ask .echo-read-ask-title {
+  margin: 0 0 16px 0;
+  font-size: var(--font-ui-large);
+  font-weight: 600;
+}
+
+.echo-read-ask .echo-read-ask-quote {
+  margin-bottom: 20px;
+  padding: 14px 16px;
+  border-radius: var(--radius-l);
+  background-color: var(--background-secondary);
+  border-left: 3px solid var(--interactive-accent);
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  line-height: 1.6;
+  user-select: text;
+  max-height: 20vh;
+  overflow: auto;
+}
+
+.echo-read-ask .echo-read-ask-label {
+  margin-bottom: 8px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  letter-spacing: 0.02em;
+}
+
+/* 主操作用实心强调色，与下面的问题列表明确区分 */
+.echo-read-ask .echo-read-ask-primary {
+  width: 100%;
+  min-height: 48px;
+  margin-bottom: 22px;
+  border: none;
+  border-radius: var(--radius-l);
+  background-color: var(--interactive-accent);
+  color: var(--text-on-accent);
+  font-size: var(--font-ui-medium);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.echo-read-ask .echo-read-ask-primary:hover {
+  background-color: var(--interactive-accent-hover);
+}
+
+/* 自适应网格：窄屏一列，宽屏两列 */
+.echo-read-ask .echo-read-ask-chips {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+  margin-bottom: 22px;
+}
+
+.echo-read-ask .echo-read-ask-chip {
+  min-height: 44px;
+  padding: 10px 14px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-l);
+  background-color: var(--background-primary);
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  text-align: left;
+  cursor: pointer;
+}
+
+.echo-read-ask .echo-read-ask-chip:hover {
+  background-color: var(--background-modifier-hover);
+}
+
+.echo-read-ask .echo-read-ask-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.echo-read-ask .echo-read-ask-input {
+  flex: 1;
+  min-height: 44px;
+  border-radius: var(--radius-l);
+}
+
+.echo-read-ask .echo-read-ask-submit {
+  min-height: 44px;
+  padding: 0 18px;
+  border-radius: var(--radius-l);
+  cursor: pointer;
+}
+
+.echo-read-ask .echo-read-ask-status:not(:empty) {
+  margin-bottom: 8px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.echo-read-ask .echo-read-ask-answer {
+  margin: 0;
+  padding: 16px;
+  border-radius: var(--radius-l);
+  background-color: var(--background-secondary);
+  color: var(--text-normal);
+  font-family: var(--font-text);
+  font-size: var(--font-text-size);
+  line-height: 1.7;
+  white-space: pre-wrap;
+  user-select: text;
+  max-height: 42vh;
+  overflow: auto;
+}
+
+.echo-read-ask .echo-read-ask-answer:empty {
+  display: none;
+}

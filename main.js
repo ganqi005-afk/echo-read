@@ -866,6 +866,93 @@ var DEFAULT_ASK_PROMPT = [
 function renderAskPrompt(template, context) {
   return fillTemplate(template, { TEXT: context.text, QUESTION: context.question });
 }
+var SYNONYM_CYCLES = [
+  {
+    understand: "grasp",
+    but: "however",
+    thing: "element",
+    important: "crucial",
+    use: "utilize",
+    make: "produce"
+  },
+  {
+    understand: "comprehend",
+    but: "nevertheless",
+    thing: "aspect",
+    important: "essential",
+    use: "employ",
+    make: "create"
+  },
+  {
+    understand: "fathom",
+    but: "yet",
+    thing: "factor",
+    important: "vital",
+    use: "deploy",
+    make: "generate"
+  },
+  {
+    understand: "perceive",
+    but: "whereas",
+    thing: "item",
+    important: "significant",
+    use: "wield",
+    make: "construct"
+  }
+];
+function pickSynonymCycle(turn) {
+  const size = SYNONYM_CYCLES.length;
+  const index = (Math.trunc(turn) % size + size) % size;
+  return SYNONYM_CYCLES[index];
+}
+function formatSynonymHint(cycle) {
+  return Object.entries(cycle).map(([base, synonym]) => `${base} → ${synonym}`).join("；");
+}
+var DEFAULT_ETYMOLOGY_PROMPT = [
+  "你是一名词源讲解助手，专注于用简洁、直观、有趣的方式解释英语单词或词根。",
+  "",
+  "输入：{{TEXT}}",
+  "（若输入是一句话或短语，先挑出其中最值得学习的一个词或词根，再按下面的格式解析它。）",
+  "",
+  "严格按以下顺序输出，不要添加其它章节：",
+  "",
+  "## 1. 词根拆解",
+  "用中文拆解词根、前缀、后缀，说明每个部分的含义。词源注脚可简略带过。",
+  "",
+  "## 2. 发音提示",
+  "用英文字母模拟发音，不使用国际音标。重读音节大写，轻音小写。",
+  "例如 photo → FOH-toh，psychology → sy-KAH-loh-jee，committee → kuh-MIT-ee。",
+  "",
+  "## 3. 英文解释",
+  "用一句 Word Power Made Easy 风格的英文句子解释关键词根的含义：",
+  "- 明确指出词根及其原义（如 The Latin root XXX means ...）",
+  "- 用生动的比喻或场景说明这个词的核心意义",
+  "- 句子完整、自然，适合英语学习者",
+  "- 其中的基础词汇按下面的同义替换要求处理",
+  "",
+  "## 4. 同义替换词汇（简易中文）",
+  "把第 3 步中用到的替换词单独列出，附简易中文。不要放进英文句子里。",
+  "",
+  "## 5. 中文翻译",
+  "把第 3 步的英文句子译成中文，语义准确、语言流畅。",
+  "",
+  "## 6. 同根词举例",
+  "列出 2–4 个同根词，无需拆解。",
+  "",
+  "同义替换要求：",
+  "- 本轮优先使用这一组：{{SYNONYMS}}",
+  "- 至少替换 3 处（如 understand / but / thing / important / use / make 等基础词）",
+  "- 同一轮内保持一致，不要中途换词",
+  "",
+  "整体保持简洁，不要展开过多背景信息。",
+  "若输入的单词拼写有误，先指出正确拼写，再按格式解析。"
+].join("\n");
+function renderEtymologyPrompt(template, context) {
+  return fillTemplate(template, {
+    TEXT: context.text,
+    SYNONYMS: context.synonyms
+  });
+}
 function fillTemplate(template, values) {
   return template.replace(
     /\{\{(\w+)\}\}/g,
@@ -912,6 +999,7 @@ function extractJsonObject(raw) {
 var PROMPT_DIR = "_lingo/prompts";
 var PRACTICE_PROMPT_PATH = "_lingo/prompts/practice-review.md";
 var ASK_PROMPT_PATH = "_lingo/prompts/ask-selection.md";
+var ETYMOLOGY_PROMPT_PATH = "_lingo/prompts/etymology.md";
 async function chatCompletion(options, systemPrompt, userContent, maxTokens = 512) {
   if (!options.apiKey) throw new Error("尚未配置文本模型的 API Key。");
   const url = buildEndpoint(options.baseUrl, options.transport);
@@ -968,6 +1056,7 @@ async function loadPrompt(app, path, fallback) {
 async function ensurePracticePromptFile(app) {
   await ensurePromptFile(app, PRACTICE_PROMPT_PATH, DEFAULT_PRACTICE_PROMPT);
   await ensurePromptFile(app, ASK_PROMPT_PATH, DEFAULT_ASK_PROMPT);
+  await ensurePromptFile(app, ETYMOLOGY_PROMPT_PATH, DEFAULT_ETYMOLOGY_PROMPT);
 }
 async function ensurePromptFile(app, path, content) {
   const adapter = app.vault.adapter;
@@ -982,6 +1071,14 @@ async function askAboutSelection(app, options, context) {
   const template = await loadAskPrompt(app);
   const prompt = renderAskPrompt(template, context);
   return chatCompletion(options, prompt, "请回答。", 800);
+}
+async function analyzeEtymology(app, options, text, turn) {
+  const template = await loadPrompt(app, ETYMOLOGY_PROMPT_PATH, DEFAULT_ETYMOLOGY_PROMPT);
+  const prompt = renderEtymologyPrompt(template, {
+    text,
+    synonyms: formatSynonymHint(pickSynonymCycle(turn))
+  });
+  return chatCompletion(options, prompt, "请按格式解析。", 1200);
 }
 async function requestPracticeFeedback(app, options, context) {
   const template = await loadPracticePrompt(app);
@@ -1014,6 +1111,7 @@ var AskModal = class extends import_obsidian4.Modal {
   inputEl = null;
   askButton = null;
   answerEl = null;
+  statusEl = null;
   constructor(app, plugin, selection) {
     super(app);
     this.plugin = plugin;
@@ -1021,49 +1119,58 @@ var AskModal = class extends import_obsidian4.Modal {
   }
   onOpen() {
     const { contentEl } = this;
-    contentEl.createEl("h2", { text: "问 AI" });
-    contentEl.createEl("p", { cls: "setting-item-description", text: "选中的文本：" });
-    const quote = contentEl.createEl("blockquote", { text: this.selection });
-    quote.style.margin = "0 0 16px 0";
-    quote.style.userSelect = "text";
-    contentEl.createEl("p", {
-      cls: "setting-item-description",
-      text: "常见问题（点一下直接问）："
+    contentEl.addClass("echo-read-ask");
+    contentEl.createEl("h3", { text: "问 AI", cls: "echo-read-ask-title" });
+    const quote = contentEl.createDiv({ cls: "echo-read-ask-quote" });
+    quote.setText(this.selection);
+    contentEl.createDiv({ cls: "echo-read-ask-label", text: "解析方式" });
+    const primary = contentEl.createEl("button", {
+      cls: "echo-read-ask-primary",
+      text: "词源解析"
     });
-    const quick = contentEl.createDiv();
-    quick.style.display = "flex";
-    quick.style.flexWrap = "wrap";
-    quick.style.gap = "8px";
-    quick.style.marginBottom = "16px";
+    primary.addEventListener("click", () => void this.runEtymology());
+    contentEl.createDiv({ cls: "echo-read-ask-label", text: "常见问题" });
+    const chips = contentEl.createDiv({ cls: "echo-read-ask-chips" });
     for (const question of QUICK_QUESTIONS) {
-      const button = quick.createEl("button", { text: question });
-      button.style.minHeight = "36px";
-      button.addEventListener("click", () => void this.ask(question));
+      const chip = chips.createEl("button", { cls: "echo-read-ask-chip", text: question });
+      chip.addEventListener("click", () => void this.ask(question));
     }
-    const row = contentEl.createDiv();
-    row.style.display = "flex";
-    row.style.gap = "8px";
-    row.style.marginBottom = "12px";
+    contentEl.createDiv({ cls: "echo-read-ask-label", text: "自己提问" });
+    const row = contentEl.createDiv({ cls: "echo-read-ask-row" });
     this.inputEl = row.createEl("input", {
+      cls: "echo-read-ask-input",
       type: "text",
-      placeholder: "也可以自己输入问题"
+      placeholder: "输入你的问题…"
     });
-    this.inputEl.style.flex = "1";
     this.inputEl.addEventListener("keydown", (event) => {
       if (event.key === "Enter") void this.ask(this.inputEl?.value ?? "");
     });
-    this.askButton = row.createEl("button", { text: "提问" });
+    this.askButton = row.createEl("button", { cls: "echo-read-ask-submit", text: "提问" });
     this.askButton.addEventListener("click", () => void this.ask(this.inputEl?.value ?? ""));
-    this.answerEl = contentEl.createEl("pre");
-    this.answerEl.style.whiteSpace = "pre-wrap";
-    this.answerEl.style.userSelect = "text";
-    this.answerEl.style.maxHeight = "40vh";
-    this.answerEl.style.overflow = "auto";
-    this.answerEl.style.fontSize = "var(--font-ui-small)";
-    this.answerEl.style.lineHeight = "1.6";
+    this.statusEl = contentEl.createDiv({ cls: "echo-read-ask-status" });
+    this.answerEl = contentEl.createEl("pre", { cls: "echo-read-ask-answer" });
   }
   onClose() {
     this.contentEl.empty();
+  }
+  async runEtymology() {
+    const options = this.resolveOptions();
+    if (!options) return;
+    this.begin("正在解析词源…");
+    try {
+      const answer = await analyzeEtymology(
+        this.app,
+        options,
+        this.selection,
+        this.plugin.settings.etymologyTurn
+      );
+      await this.plugin.updateSettings({
+        etymologyTurn: this.plugin.settings.etymologyTurn + 1
+      });
+      this.finish(answer);
+    } catch (error) {
+      this.fail(error);
+    }
   }
   async ask(question) {
     const trimmed = question.trim();
@@ -1071,41 +1178,59 @@ var AskModal = class extends import_obsidian4.Modal {
       new import_obsidian4.Notice("请先输入问题。");
       return;
     }
+    const options = this.resolveOptions();
+    if (!options) return;
+    this.begin(`正在思考…
+
+${trimmed}`);
+    try {
+      const answer = await askAboutSelection(this.app, options, {
+        text: this.selection,
+        question: trimmed
+      });
+      this.finish(answer);
+    } catch (error) {
+      this.fail(error);
+    }
+  }
+  resolveOptions() {
     const settings = this.plugin.settings;
     const apiKey = this.plugin.apiKeys[settings.llmKeyId];
     if (!settings.llmKeyId || !apiKey) {
-      this.setAnswer("尚未绑定文本模型的 Key，请到「设置 → 文本能力」里绑定。");
-      return;
+      this.setStatus("尚未绑定文本模型的 Key");
+      this.setAnswer("请到「设置 → 文本能力」里绑定一把 Key，并点「测试文本模型」确认可用。");
+      return null;
     }
-    this.setAnswer(`思考中…
-
-${trimmed}`);
+    return {
+      baseUrl: settings.llmBaseUrl,
+      apiKey,
+      model: settings.llmModel,
+      transport: settings.llmTransport
+    };
+  }
+  begin(message) {
+    this.setStatus("请求中…");
+    this.setAnswer(message);
     if (this.askButton) this.askButton.disabled = true;
-    try {
-      const answer = await askAboutSelection(
-        this.app,
-        {
-          baseUrl: settings.llmBaseUrl,
-          apiKey,
-          model: settings.llmModel,
-          transport: settings.llmTransport
-        },
-        { text: this.selection, question: trimmed }
-      );
-      this.setAnswer(answer.trim() === "" ? "（模型没有返回内容）" : answer.trim());
-    } catch (error) {
-      this.setAnswer(`失败：${messageOf2(error)}`);
-    } finally {
-      if (this.askButton) this.askButton.disabled = false;
-    }
+  }
+  finish(answer) {
+    this.setStatus("");
+    this.setAnswer(answer.trim() === "" ? "（模型没有返回内容）" : answer.trim());
+    if (this.askButton) this.askButton.disabled = false;
+  }
+  fail(error) {
+    const message = error instanceof Error ? error.message : String(error);
+    this.setStatus("失败");
+    this.setAnswer(message);
+    if (this.askButton) this.askButton.disabled = false;
+  }
+  setStatus(text) {
+    this.statusEl?.setText(text);
   }
   setAnswer(text) {
     this.answerEl?.setText(text);
   }
 };
-function messageOf2(error) {
-  return error instanceof Error ? error.message : String(error);
-}
 
 // src/speech/tts-system.ts
 function loadVoices(timeoutMs = 2e3) {
@@ -1371,6 +1496,7 @@ var DEFAULT_SETTINGS = {
   llmBaseUrl: TEXT_PRESETS[0].baseUrl,
   llmModel: "qwen3.8-flash",
   llmAutoExplain: false,
+  etymologyTurn: 0,
   voiceURI: "",
   speechRate: 1,
   speakOnClick: true,
@@ -2475,7 +2601,7 @@ var EchoReadSettingTab = class extends import_obsidian7.PluginSettingTab {
           new import_obsidian7.Notice("已保存。");
           this.display();
         } catch (error) {
-          new import_obsidian7.Notice(`保存失败：${messageOf3(error)}`);
+          new import_obsidian7.Notice(`保存失败：${messageOf2(error)}`);
         }
       })
     );
@@ -2922,7 +3048,7 @@ ${ids.join("\n")}`;
   }
   async runWithDiagnostics(button, idleLabel, busyLabel, context, action) {
     this.diagnosticLines = [];
-    this.appendDiagnostic(`构建时间：${"2026-10-04T11:02:02.854Z"}`);
+    this.appendDiagnostic(`构建时间：${"2026-10-04T11:07:37.453Z"}`);
     this.appendDiagnostic(`时间：${(/* @__PURE__ */ new Date()).toLocaleString()}`);
     for (const line of context) this.appendDiagnostic(line);
     try {
@@ -2932,7 +3058,7 @@ ${ids.join("\n")}`;
       new import_obsidian7.Notice("成功，详见下方诊断信息。", 8e3);
     } catch (error) {
       this.appendDiagnostic("结果：失败");
-      this.appendDiagnostic(messageOf3(error));
+      this.appendDiagnostic(messageOf2(error));
       new import_obsidian7.Notice("失败，详见下方诊断信息。", 8e3);
     } finally {
       button.setDisabled(false);
@@ -3037,7 +3163,7 @@ ${previewTtsBody(voice, text)}`);
     ].join("\n");
   }
 };
-function messageOf3(error) {
+function messageOf2(error) {
   return error instanceof Error ? error.message : String(error);
 }
 

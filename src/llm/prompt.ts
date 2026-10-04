@@ -107,6 +107,120 @@ export function renderAskPrompt(template: string, context: AskContext): string {
   return fillTemplate(template, { TEXT: context.text, QUESTION: context.question });
 }
 
+// ---------------- 词源解析（Word Power Made Easy 风格） ----------------
+
+/**
+ * 同义替换的轮换组。
+ *
+ * 原规则要求"接下来的 3–5 条解析中继续使用同一个同义词"——但模型调用是
+ * **无状态的**，它记不住上一条用过什么。所以轮换必须由本地维护：
+ * 记一个计数器，每次解析推进一组，把本组词写进提示词。
+ */
+export const SYNONYM_CYCLES: readonly Record<string, string>[] = [
+  {
+    understand: "grasp",
+    but: "however",
+    thing: "element",
+    important: "crucial",
+    use: "utilize",
+    make: "produce",
+  },
+  {
+    understand: "comprehend",
+    but: "nevertheless",
+    thing: "aspect",
+    important: "essential",
+    use: "employ",
+    make: "create",
+  },
+  {
+    understand: "fathom",
+    but: "yet",
+    thing: "factor",
+    important: "vital",
+    use: "deploy",
+    make: "generate",
+  },
+  {
+    understand: "perceive",
+    but: "whereas",
+    thing: "item",
+    important: "significant",
+    use: "wield",
+    make: "construct",
+  },
+];
+
+/** 取第 turn 次解析应使用的同义词组，自动循环。 */
+export function pickSynonymCycle(turn: number): Record<string, string> {
+  const size = SYNONYM_CYCLES.length;
+  const index = ((Math.trunc(turn) % size) + size) % size;
+  return SYNONYM_CYCLES[index];
+}
+
+export function formatSynonymHint(cycle: Record<string, string>): string {
+  return Object.entries(cycle)
+    .map(([base, synonym]) => `${base} → ${synonym}`)
+    .join("；");
+}
+
+export interface EtymologyContext {
+  /** 选中的内容，可能是单词，也可能是句子里的片段。 */
+  text: string;
+  /** 本次应使用的同义词组，用于满足"跨条轮换"的要求。 */
+  synonyms: string;
+}
+
+export const DEFAULT_ETYMOLOGY_PROMPT = [
+  "你是一名词源讲解助手，专注于用简洁、直观、有趣的方式解释英语单词或词根。",
+  "",
+  "输入：{{TEXT}}",
+  "（若输入是一句话或短语，先挑出其中最值得学习的一个词或词根，再按下面的格式解析它。）",
+  "",
+  "严格按以下顺序输出，不要添加其它章节：",
+  "",
+  "## 1. 词根拆解",
+  "用中文拆解词根、前缀、后缀，说明每个部分的含义。词源注脚可简略带过。",
+  "",
+  "## 2. 发音提示",
+  "用英文字母模拟发音，不使用国际音标。重读音节大写，轻音小写。",
+  "例如 photo → FOH-toh，psychology → sy-KAH-loh-jee，committee → kuh-MIT-ee。",
+  "",
+  "## 3. 英文解释",
+  "用一句 Word Power Made Easy 风格的英文句子解释关键词根的含义：",
+  "- 明确指出词根及其原义（如 The Latin root XXX means ...）",
+  "- 用生动的比喻或场景说明这个词的核心意义",
+  "- 句子完整、自然，适合英语学习者",
+  "- 其中的基础词汇按下面的同义替换要求处理",
+  "",
+  "## 4. 同义替换词汇（简易中文）",
+  "把第 3 步中用到的替换词单独列出，附简易中文。不要放进英文句子里。",
+  "",
+  "## 5. 中文翻译",
+  "把第 3 步的英文句子译成中文，语义准确、语言流畅。",
+  "",
+  "## 6. 同根词举例",
+  "列出 2–4 个同根词，无需拆解。",
+  "",
+  "同义替换要求：",
+  "- 本轮优先使用这一组：{{SYNONYMS}}",
+  "- 至少替换 3 处（如 understand / but / thing / important / use / make 等基础词）",
+  "- 同一轮内保持一致，不要中途换词",
+  "",
+  "整体保持简洁，不要展开过多背景信息。",
+  "若输入的单词拼写有误，先指出正确拼写，再按格式解析。",
+].join("\n");
+
+export function renderEtymologyPrompt(
+  template: string,
+  context: EtymologyContext,
+): string {
+  return fillTemplate(template, {
+    TEXT: context.text,
+    SYNONYMS: context.synonyms,
+  });
+}
+
 function fillTemplate(template: string, values: Record<string, string>): string {
   return template.replace(/\{\{(\w+)\}\}/g, (match, name: string) =>
     name in values ? values[name] : match,

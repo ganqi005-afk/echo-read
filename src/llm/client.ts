@@ -2,9 +2,13 @@ import { App, requestUrl } from "obsidian";
 import { buildEndpoint, type Transport } from "../speech/client";
 import {
   DEFAULT_ASK_PROMPT,
+  DEFAULT_ETYMOLOGY_PROMPT,
   DEFAULT_PRACTICE_PROMPT,
+  formatSynonymHint,
   parseFeedback,
+  pickSynonymCycle,
   renderAskPrompt,
+  renderEtymologyPrompt,
   renderPrompt,
   type AskContext,
   type PracticeContext,
@@ -14,6 +18,7 @@ import {
 export const PROMPT_DIR = "_lingo/prompts";
 export const PRACTICE_PROMPT_PATH = "_lingo/prompts/practice-review.md";
 export const ASK_PROMPT_PATH = "_lingo/prompts/ask-selection.md";
+export const ETYMOLOGY_PROMPT_PATH = "_lingo/prompts/etymology.md";
 
 export interface LlmClientOptions {
   baseUrl: string;
@@ -107,6 +112,7 @@ async function loadPrompt(app: App, path: string, fallback: string): Promise<str
 export async function ensurePracticePromptFile(app: App): Promise<void> {
   await ensurePromptFile(app, PRACTICE_PROMPT_PATH, DEFAULT_PRACTICE_PROMPT);
   await ensurePromptFile(app, ASK_PROMPT_PATH, DEFAULT_ASK_PROMPT);
+  await ensurePromptFile(app, ETYMOLOGY_PROMPT_PATH, DEFAULT_ETYMOLOGY_PROMPT);
 }
 
 async function ensurePromptFile(app: App, path: string, content: string): Promise<void> {
@@ -134,6 +140,27 @@ export async function askAboutSelection(
   const template = await loadAskPrompt(app);
   const prompt = renderAskPrompt(template, context);
   return chatCompletion(options, prompt, "请回答。", 800);
+}
+
+/**
+ * 词源解析。
+ *
+ * `turn` 是本次是第几次解析，用来推进同义词轮换 ——
+ * 那份提示词要求"接下来 3–5 条继续使用同一个同义词"，
+ * 而无状态的 API 调用必须由本地记这个数。
+ */
+export async function analyzeEtymology(
+  app: App,
+  options: LlmClientOptions,
+  text: string,
+  turn: number,
+): Promise<string> {
+  const template = await loadPrompt(app, ETYMOLOGY_PROMPT_PATH, DEFAULT_ETYMOLOGY_PROMPT);
+  const prompt = renderEtymologyPrompt(template, {
+    text,
+    synonyms: formatSynonymHint(pickSynonymCycle(turn)),
+  });
+  return chatCompletion(options, prompt, "请按格式解析。", 1200);
 }
 
 /** 用一次练习的结果向模型索要讲解与卡片建议。 */

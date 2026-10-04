@@ -116,6 +116,8 @@ export interface EchoReadSettings {
   llmModel: string;
   /** 跟读结束后自动请模型讲解。默认关闭，避免在不经意间产生调用。 */
   llmAutoExplain: boolean;
+  /** 已做过多少次词源解析。用于推进同义词轮换（API 无状态，只能本地记）。 */
+  etymologyTurn: number;
 
   /** 朗读。 */
   voiceURI: string;
@@ -160,6 +162,7 @@ export const DEFAULT_SETTINGS: EchoReadSettings = {
   llmBaseUrl: TEXT_PRESETS[0].baseUrl,
   llmModel: "qwen3.8-flash",
   llmAutoExplain: false,
+  etymologyTurn: 0,
 
   voiceURI: "",
   speechRate: 1,

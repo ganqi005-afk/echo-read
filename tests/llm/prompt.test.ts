@@ -1,10 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_ASK_PROMPT,
+  DEFAULT_ETYMOLOGY_PROMPT,
   DEFAULT_PRACTICE_PROMPT,
+  formatSynonymHint,
   parseFeedback,
+  pickSynonymCycle,
   renderAskPrompt,
+  renderEtymologyPrompt,
   renderPrompt,
+  SYNONYM_CYCLES,
   type PracticeContext,
 } from "../../src/llm/prompt";
 
@@ -121,5 +126,67 @@ describe("renderAskPrompt", () => {
 
   it("keeps the answer bounded unless the user asks for more", () => {
     expect(DEFAULT_ASK_PROMPT).toContain("三句话以内");
+  });
+});
+
+describe("同义词轮换", () => {
+  /**
+   * 原规则要求"接下来的 3–5 条解析中继续使用同一个同义词"。
+   * 模型调用是无状态的，记不住上一条用了什么 —— 所以轮换只能由本地推进。
+   */
+  it("advances one cycle per turn", () => {
+    expect(pickSynonymCycle(0)).not.toEqual(pickSynonymCycle(1));
+  });
+
+  it("wraps around after the last cycle", () => {
+    expect(pickSynonymCycle(SYNONYM_CYCLES.length)).toEqual(pickSynonymCycle(0));
+  });
+
+  it("survives a negative turn without crashing or returning undefined", () => {
+    expect(pickSynonymCycle(-1)).toEqual(SYNONYM_CYCLES[SYNONYM_CYCLES.length - 1]);
+  });
+
+  it("formats every pair into the hint line", () => {
+    const hint = formatSynonymHint(pickSynonymCycle(0));
+    expect(hint).toContain("understand → grasp");
+    expect(hint).toContain("；");
+  });
+});
+
+describe("renderEtymologyPrompt", () => {
+  it("fills in the text and the synonym group for this turn", () => {
+    const rendered = renderEtymologyPrompt(DEFAULT_ETYMOLOGY_PROMPT, {
+      text: "suspect",
+      synonyms: formatSynonymHint(pickSynonymCycle(0)),
+    });
+    expect(rendered).toContain("suspect");
+    expect(rendered).toContain("grasp");
+    expect(rendered).not.toContain("{{");
+  });
+
+  // 这份提示词的全部价值在于格式被严格遵守
+  it("keeps every required section in order", () => {
+    const order = [
+      "## 1. 词根拆解",
+      "## 2. 发音提示",
+      "## 3. 英文解释",
+      "## 4. 同义替换词汇",
+      "## 5. 中文翻译",
+      "## 6. 同根词举例",
+    ];
+    let cursor = -1;
+    for (const heading of order) {
+      const at = DEFAULT_ETYMOLOGY_PROMPT.indexOf(heading);
+      expect(at).toBeGreaterThan(cursor);
+      cursor = at;
+    }
+  });
+
+  it("bans the international phonetic alphabet", () => {
+    expect(DEFAULT_ETYMOLOGY_PROMPT).toContain("不使用国际音标");
+  });
+
+  it("asks for at least three substitutions", () => {
+    expect(DEFAULT_ETYMOLOGY_PROMPT).toContain("至少替换 3 处");
   });
 });
