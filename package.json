@@ -8,6 +8,7 @@
     "dev": "node esbuild.config.mjs",
     "build": "node esbuild.config.mjs production",
     "deploy": "node esbuild.config.mjs production && node scripts/deploy.mjs",
+    "export": "node esbuild.config.mjs production && node scripts/export.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },

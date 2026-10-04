@@ -1,6 +1,7 @@
 node_modules/
 *.log
 .DS_Store
+dist/
 
 # 本机部署目标（含个人路径，不进版本历史）
 .deploy-target
