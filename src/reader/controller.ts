@@ -28,6 +28,8 @@ import {
  */
 export class ReadingController {
   private currentGroup: HTMLElement[] = [];
+  /** 拖选出来的目标。用克隆的 Range 而不是缓存矩形，滚动后重新取仍然准确。 */
+  private currentRange: Range | null = null;
   private currentText = "";
 
   private bar: HTMLElement | null = null;
@@ -51,6 +53,9 @@ export class ReadingController {
     });
 
     this.plugin.registerDomEvent(document, "click", (event) => this.onClick(event));
+    // 拖选或键盘选择结束后，看是否有文本被选中
+    this.plugin.registerDomEvent(document, "mouseup", () => this.scheduleSelectionCheck());
+    this.plugin.registerDomEvent(document, "keyup", () => this.scheduleSelectionCheck());
     // 滚动或改变窗口大小时让操作条跟着句子走（iPad 分屏会改变视口宽度）
     this.plugin.registerDomEvent(window, "scroll", () => this.scheduleReposition(), true);
     this.plugin.registerDomEvent(window, "resize", () => this.scheduleReposition());
@@ -63,6 +68,9 @@ export class ReadingController {
 
     // 操作条自己的点击不参与选句判定，否则点「朗读」会把操作条先关掉
     if (this.bar && this.bar.contains(target)) return;
+
+    // 有文本被选中时，选中的内容优先 —— 单击不应该把它覆盖成整句
+    if (this.hasLiveSelection()) return;
 
     // 链接优先：点在链接上应正常跳转，不抢它的行为
     if (target.closest("a")) return;
@@ -93,6 +101,7 @@ export class ReadingController {
     );
     if (group.length === 0) return;
     this.highlightGroup(group);
+    this.currentRange = null;
     this.showBar();
   }
 
@@ -112,6 +121,7 @@ export class ReadingController {
     this.stopContinuous();
     this.cancelRecording();
     this.clearHighlight();
+    this.currentRange = null;
     this.currentText = "";
     stopSpeaking();
     stopPlayback();
@@ -138,12 +148,12 @@ export class ReadingController {
   private positionPopover(): void {
     const bar = this.bar;
     if (!bar || bar.style.display === "none") return;
-    if (this.currentGroup.length === 0) {
+
+    const rects = this.targetRects();
+    if (!rects) {
       bar.style.display = "none";
       return;
     }
-
-    const rects = this.currentGroup.map((element) => element.getBoundingClientRect());
     const top = Math.min(...rects.map((rect) => rect.top));
     const bottom = Math.max(...rects.map((rect) => rect.bottom));
     const left = Math.min(...rects.map((rect) => rect.left));
@@ -173,6 +183,70 @@ export class ReadingController {
     bar.style.top = `${Math.round(y)}px`;
     bar.style.left = `${Math.round(x)}px`;
     bar.style.visibility = "visible";
+  }
+
+  /**
+   * 操作对象可能是「整句」（多个 span），也可能是「拖选的一段文字」（一个 Range）。
+   * Range 是实时求值的，所以滚动后位置依然准确 —— 缓存矩形做不到这一点。
+   */
+  private targetRects(): DOMRect[] | null {
+    if (this.currentGroup.length > 0) {
+      return this.currentGroup.map((element) => element.getBoundingClientRect());
+    }
+    if (this.currentRange) return [this.currentRange.getBoundingClientRect()];
+    return null;
+  }
+
+  private hasLiveSelection(): boolean {
+    const selection = window.getSelection();
+    return selection !== null && !selection.isCollapsed && selection.toString().trim() !== "";
+  }
+
+  private scheduleSelectionCheck(): void {
+    // 等浏览器先把 selection 更新完，再读它
+    window.setTimeout(() => this.handleSelection(), 0);
+  }
+
+  /**
+   * 把任意选中的文本作为朗读 / 跟读对象。
+   *
+   * 这条路径补上了「点整句」覆盖不到的场景：只练一个短语或生词，
+   * 以及标题、列表、表格这类不会被装饰成句子 span 的地方。
+   */
+  private handleSelection(): void {
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0) return;
+
+    const text = selection.toString().trim();
+    if (!text) return;
+
+    const range = selection.getRangeAt(0);
+    if (this.isInsideBar(range)) return;
+    if (!this.isInsideNote(range.commonAncestorContainer)) return;
+
+    this.stopContinuous();
+    this.cancelRecording();
+    this.clearHighlight();
+
+    this.currentGroup = [];
+    this.currentRange = range.cloneRange();
+    this.currentText = text;
+    this.showBar();
+  }
+
+  private isInsideBar(range: Range): boolean {
+    if (!this.bar) return false;
+    const node = range.commonAncestorContainer;
+    const element = node instanceof HTMLElement ? node : node.parentElement;
+    return element !== null && this.bar.contains(element);
+  }
+
+  /** 只处理笔记正文里的选择，避开设置面板、模态框等其它界面。 */
+  private isInsideNote(node: Node): boolean {
+    const element = node instanceof HTMLElement ? node : node.parentElement;
+    if (!element) return false;
+    if (element.closest(".modal-container, .vertical-tab-content")) return false;
+    return element.closest(".markdown-preview-view, .markdown-source-view, .cm-editor") !== null;
   }
 
   private scheduleReposition(): void {
