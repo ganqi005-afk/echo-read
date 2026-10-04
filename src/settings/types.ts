@@ -114,6 +114,8 @@ export interface EchoReadSettings {
   llmTransport: Transport;
   llmBaseUrl: string;
   llmModel: string;
+  /** 跟读结束后自动请模型讲解。默认关闭，避免在不经意间产生调用。 */
+  llmAutoExplain: boolean;
 
   /** 朗读。 */
   voiceURI: string;
@@ -157,6 +159,7 @@ export const DEFAULT_SETTINGS: EchoReadSettings = {
   llmTransport: "openai-compatible",
   llmBaseUrl: TEXT_PRESETS[0].baseUrl,
   llmModel: "qwen3.8-flash",
+  llmAutoExplain: false,
 
   voiceURI: "",
   speechRate: 1,

@@ -6,6 +6,8 @@ import { diffDictation } from "../core/diff";
 import { encodeWav } from "../core/wav";
 import type EchoReadPlugin from "../main";
 import { scoreAttempt } from "../scoring/attempt";
+import { requestPracticeFeedback } from "../llm/client";
+import type { PracticeContext } from "../llm/prompt";
 import { transcribeAudio } from "../speech/client";
 import { stopSpeaking } from "../speech/tts-system";
 import { speakSentence } from "./actions";
@@ -40,11 +42,14 @@ export class ReadingController {
   private resultEl: HTMLElement | null = null;
   private shadowButton: HTMLButtonElement | null = null;
   private playbackButton: HTMLButtonElement | null = null;
+  private explainButton: HTMLButtonElement | null = null;
   private continuousButton: HTMLButtonElement | null = null;
 
   private recorder?: Recorder;
   /** 最近一次录到的音频（16-bit WAV），只放内存，换目标就丢。 */
   private myRecording: ArrayBuffer | null = null;
+  /** 最近一次跟读的完整结果，作为讲解的输入。 */
+  private lastPractice: PracticeContext | null = null;
   private continuous = false;
   private repositionQueued = false;
 
@@ -151,7 +156,9 @@ export class ReadingController {
 
   private forgetRecording(): void {
     this.myRecording = null;
+    this.lastPractice = null;
     if (this.playbackButton) this.playbackButton.style.display = "none";
+    if (this.explainButton) this.explainButton.style.display = "none";
   }
 
   // ---------------- 拖选文本 ----------------
@@ -229,6 +236,11 @@ export class ReadingController {
     this.playbackButton = bar.createEl("button", { text: "听我的" });
     this.playbackButton.style.display = "none";
     this.playbackButton.addEventListener("click", () => void this.playMyRecording());
+
+    // 同样在练习之后才出现：它的输入就是刚才那次跟读的结果
+    this.explainButton = bar.createEl("button", { text: "讲解" });
+    this.explainButton.style.display = "none";
+    this.explainButton.addEventListener("click", () => void this.explainPractice());
 
     this.continuousButton = bar.createEl("button", { text: "连续朗读" });
     this.continuousButton.addEventListener("click", () => void this.toggleContinuous());
@@ -449,6 +461,19 @@ export class ReadingController {
       const stats = diffDictation(this.currentText, text).stats;
       const score = scoreAttempt(this.currentText, stats, recording.durationMs);
 
+      // 记下完整结果，作为「讲解」的输入
+      this.lastPractice = {
+        text: this.currentText,
+        recognized: text,
+        accuracy: score.accuracy,
+        completeness: score.completeness,
+        fluency: score.fluency,
+        missing: stats.missing,
+        extra: stats.extra,
+        wrong: stats.wrong,
+      };
+      if (this.explainButton) this.explainButton.style.display = "";
+
       this.setStatus(
         `准确度 ${score.accuracy}　完整度 ${score.completeness}　流利度 ${score.fluency}　总分 ${score.overall}`,
       );
@@ -461,8 +486,53 @@ export class ReadingController {
           "点「听我的」可以回放刚才的录音，和「听原句」对比。",
         ].join("\n"),
       );
+
+      if (this.plugin.settings.llmAutoExplain) void this.explainPractice();
     } catch (error) {
       this.reportFailure("跟读评分", error);
+    }
+  }
+
+  /**
+   * 请文本模型解读这次练习。
+   *
+   * 提示词里有两条硬规则（设计文档 13.2 / 13.3）：只解释不翻译整句、
+   * 没有值得练的词就返回空结果。所以这里的输出是"一段说明 + 最多两张卡片建议"。
+   */
+  private async explainPractice(): Promise<void> {
+    const context = this.lastPractice;
+    if (!context) return;
+
+    const settings = this.plugin.settings;
+    const apiKey = this.plugin.apiKeys[settings.llmKeyId];
+    if (!settings.llmKeyId || !apiKey) {
+      this.reportFailure("讲解", new Error("尚未绑定文本模型的 Key，请到插件设置里处理。"));
+      return;
+    }
+
+    this.setStatus("模型分析中…");
+    try {
+      const feedback = await requestPracticeFeedback(
+        this.app,
+        {
+          baseUrl: settings.llmBaseUrl,
+          apiKey,
+          model: settings.llmModel,
+          transport: settings.llmTransport,
+        },
+        context,
+      );
+
+      const lines: string[] = [];
+      if (feedback.explain) lines.push(`讲解：${feedback.explain}`);
+      for (const card of feedback.cards) {
+        lines.push(`卡片建议：${card.term} → ${card.cloze}`);
+      }
+
+      this.appendResult(lines.length > 0 ? lines.join("\n") : "模型没有给出额外说明。");
+      this.setStatus("讲解完成");
+    } catch (error) {
+      this.reportFailure("讲解", error);
     }
   }
 
@@ -504,6 +574,12 @@ export class ReadingController {
     this.scheduleReposition();
   }
 
+  /** 追加而不是覆盖：讲解要跟分数一起看，不能被冲掉。 */
+  private appendResult(text: string): void {
+    const current = this.resultEl?.textContent ?? "";
+    this.setResult(current.trim() === "" ? text : `${current}\n${text}`);
+  }
+
   private dispose(): void {
     this.stopContinuous();
     this.cancelRecording();
@@ -514,6 +590,7 @@ export class ReadingController {
     this.resultEl = null;
     this.shadowButton = null;
     this.playbackButton = null;
+    this.explainButton = null;
     this.continuousButton = null;
   }
 }

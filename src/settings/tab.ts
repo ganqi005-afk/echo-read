@@ -12,6 +12,7 @@ import {
   type Transport,
 } from "../speech/client";
 import { describeProbeOutcome } from "../speech/key-probe";
+import { chatCompletion } from "../llm/client";
 import {
   guessMimeType,
   previewTtsBody,
@@ -470,6 +471,28 @@ export class EchoReadSettingTab extends PluginSettingTab {
           await this.plugin.updateSettings({ llmModel: value.trim() });
         }),
       );
+
+    new Setting(containerEl)
+      .setName("跟读后自动讲解")
+      .setDesc("开启后，每次跟读评分都会自动请模型解读。会产生调用费用，按需开启。")
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.llmAutoExplain).onChange(async (value) => {
+          await this.plugin.updateSettings({ llmAutoExplain: value });
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName("测试文本模型")
+      .setDesc("发一个极短的请求，确认地址、模型、Key 是否可用。")
+      .addButton((button) =>
+        button.setButtonText("测试").onClick(async () => {
+          button.setDisabled(true);
+          button.setButtonText("请求中…");
+          await this.runWithDiagnostics(button, "测试", "请求中…", this.llmContext(), () =>
+            this.testLlm(),
+          );
+        }),
+      );
   }
 
   // ---------------- 朗读 ----------------
@@ -745,6 +768,31 @@ export class EchoReadSettingTab extends PluginSettingTab {
       `识别模型：${this.plugin.settings.asrModel}`,
       `绑定 Key：${this.describeBoundKey(this.plugin.settings.asrKeyId)}`,
     ];
+  }
+
+  private llmContext(): string[] {
+    return [
+      "用途：文本模型",
+      `接入地址：${buildEndpoint(this.plugin.settings.llmBaseUrl, this.plugin.settings.llmTransport)}`,
+      `模型：${this.plugin.settings.llmModel}`,
+      `绑定 Key：${this.describeBoundKey(this.plugin.settings.llmKeyId)}`,
+    ];
+  }
+
+  private async testLlm(): Promise<string> {
+    const apiKey = this.requireKey(this.plugin.settings.llmKeyId, "文本能力");
+    const reply = await chatCompletion(
+      {
+        baseUrl: this.plugin.settings.llmBaseUrl,
+        apiKey,
+        model: this.plugin.settings.llmModel,
+        transport: this.plugin.settings.llmTransport,
+      },
+      "你是一个连通性测试助手。只回复两个字：可用。",
+      "请回复。",
+      32,
+    );
+    return `模型回复：${reply}`;
   }
 
   private async refreshSampleDescription(setting: { setDesc(value: string): unknown }): Promise<void> {
