@@ -1214,11 +1214,14 @@ var ReadingController = class {
   continuousButton = null;
   recorder;
   continuous = false;
+  repositionQueued = false;
   register() {
     this.plugin.registerMarkdownPostProcessor((element) => {
       element.querySelectorAll("p").forEach((paragraph) => decorateParagraph(paragraph));
     });
     this.plugin.registerDomEvent(document, "click", (event) => this.onClick(event));
+    this.plugin.registerDomEvent(window, "scroll", () => this.scheduleReposition(), true);
+    this.plugin.registerDomEvent(window, "resize", () => this.scheduleReposition());
     this.plugin.register(() => this.dispose());
   }
   onClick(event) {
@@ -1269,8 +1272,56 @@ var ReadingController = class {
   showBar() {
     const bar = this.ensureBar();
     bar.style.display = "flex";
+    bar.style.visibility = "hidden";
     this.setStatus("");
     this.setResult("");
+    this.positionPopover();
+  }
+  /**
+   * 把操作条锚定在选中句的正下方 —— 操作就在你读的那句话旁边，
+   * 不用把视线移到屏幕底部。
+   *
+   * 被选中的句子可能跨多行，所以要取所有 span 的并集包围盒；
+   * 下方放不下时翻到上方，左右也会夹在视口内避免溢出。
+   */
+  positionPopover() {
+    const bar = this.bar;
+    if (!bar || bar.style.display === "none") return;
+    if (this.currentGroup.length === 0) {
+      bar.style.display = "none";
+      return;
+    }
+    const rects = this.currentGroup.map((element) => element.getBoundingClientRect());
+    const top = Math.min(...rects.map((rect) => rect.top));
+    const bottom = Math.max(...rects.map((rect) => rect.bottom));
+    const left = Math.min(...rects.map((rect) => rect.left));
+    const right = Math.max(...rects.map((rect) => rect.right));
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    if (bottom < 0 || top > viewportHeight) {
+      bar.style.visibility = "hidden";
+      return;
+    }
+    const height = bar.offsetHeight;
+    const width = bar.offsetWidth;
+    let y = bottom + 8;
+    if (y + height > viewportHeight - 8) {
+      const above = top - height - 8;
+      y = above >= 8 ? above : Math.max(8, viewportHeight - height - 8);
+    }
+    let x = Math.min(left, right - width);
+    x = Math.max(8, Math.min(x, viewportWidth - width - 8));
+    bar.style.top = `${Math.round(y)}px`;
+    bar.style.left = `${Math.round(x)}px`;
+    bar.style.visibility = "visible";
+  }
+  scheduleReposition() {
+    if (this.repositionQueued) return;
+    this.repositionQueued = true;
+    window.requestAnimationFrame(() => {
+      this.repositionQueued = false;
+      this.positionPopover();
+    });
   }
   ensureBar() {
     if (this.bar) return this.bar;
@@ -1425,9 +1476,11 @@ var ReadingController = class {
   }
   setStatus(text) {
     this.statusEl?.setText(text);
+    this.scheduleReposition();
   }
   setResult(text) {
     this.resultEl?.setText(text);
+    this.scheduleReposition();
   }
   dispose() {
     this.stopContinuous();
@@ -2087,7 +2140,7 @@ ${ids.join("\n")}`;
   }
   async runWithDiagnostics(button, idleLabel, busyLabel, context, action) {
     this.diagnosticLines = [];
-    this.appendDiagnostic(`构建时间：${"2026-10-04T06:27:33.249Z"}`);
+    this.appendDiagnostic(`构建时间：${"2026-10-04T06:32:44.818Z"}`);
     this.appendDiagnostic(`时间：${(/* @__PURE__ */ new Date()).toLocaleString()}`);
     for (const line of context) this.appendDiagnostic(line);
     try {

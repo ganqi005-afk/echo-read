@@ -38,6 +38,7 @@ export class ReadingController {
 
   private recorder?: Recorder;
   private continuous = false;
+  private repositionQueued = false;
 
   constructor(
     private readonly app: App,
@@ -50,6 +51,9 @@ export class ReadingController {
     });
 
     this.plugin.registerDomEvent(document, "click", (event) => this.onClick(event));
+    // 滚动或改变窗口大小时让操作条跟着句子走（iPad 分屏会改变视口宽度）
+    this.plugin.registerDomEvent(window, "scroll", () => this.scheduleReposition(), true);
+    this.plugin.registerDomEvent(window, "resize", () => this.scheduleReposition());
     this.plugin.register(() => this.dispose());
   }
 
@@ -117,8 +121,67 @@ export class ReadingController {
   private showBar(): void {
     const bar = this.ensureBar();
     bar.style.display = "flex";
+    // 先藏起来，避免它闪现在上一个句子的位置
+    bar.style.visibility = "hidden";
     this.setStatus("");
     this.setResult("");
+    this.positionPopover();
+  }
+
+  /**
+   * 把操作条锚定在选中句的正下方 —— 操作就在你读的那句话旁边，
+   * 不用把视线移到屏幕底部。
+   *
+   * 被选中的句子可能跨多行，所以要取所有 span 的并集包围盒；
+   * 下方放不下时翻到上方，左右也会夹在视口内避免溢出。
+   */
+  private positionPopover(): void {
+    const bar = this.bar;
+    if (!bar || bar.style.display === "none") return;
+    if (this.currentGroup.length === 0) {
+      bar.style.display = "none";
+      return;
+    }
+
+    const rects = this.currentGroup.map((element) => element.getBoundingClientRect());
+    const top = Math.min(...rects.map((rect) => rect.top));
+    const bottom = Math.max(...rects.map((rect) => rect.bottom));
+    const left = Math.min(...rects.map((rect) => rect.left));
+    const right = Math.max(...rects.map((rect) => rect.right));
+
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+
+    // 整句滚出了视野就藏起来，免得操作条"钉"在空白处
+    if (bottom < 0 || top > viewportHeight) {
+      bar.style.visibility = "hidden";
+      return;
+    }
+
+    const height = bar.offsetHeight;
+    const width = bar.offsetWidth;
+
+    let y = bottom + 8;
+    if (y + height > viewportHeight - 8) {
+      const above = top - height - 8;
+      y = above >= 8 ? above : Math.max(8, viewportHeight - height - 8);
+    }
+
+    let x = Math.min(left, right - width);
+    x = Math.max(8, Math.min(x, viewportWidth - width - 8));
+
+    bar.style.top = `${Math.round(y)}px`;
+    bar.style.left = `${Math.round(x)}px`;
+    bar.style.visibility = "visible";
+  }
+
+  private scheduleReposition(): void {
+    if (this.repositionQueued) return;
+    this.repositionQueued = true;
+    window.requestAnimationFrame(() => {
+      this.repositionQueued = false;
+      this.positionPopover();
+    });
   }
 
   private ensureBar(): HTMLElement {
@@ -312,10 +375,12 @@ export class ReadingController {
 
   private setStatus(text: string): void {
     this.statusEl?.setText(text);
+    this.scheduleReposition();
   }
 
   private setResult(text: string): void {
     this.resultEl?.setText(text);
+    this.scheduleReposition();
   }
 
   private dispose(): void {

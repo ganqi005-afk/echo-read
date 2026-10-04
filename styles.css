@@ -11,10 +11,7 @@
 
 .echo-read-bar {
   position: fixed;
-  left: 50%;
-  /* 避开 iPad 的安全区，否则会被 Home Indicator 盖住（设计文档 4.8） */
-  bottom: calc(env(safe-area-inset-bottom, 0px) + 16px);
-  transform: translateX(-50%);
+  /* top / left 由脚本按选中句的位置实时计算，见 controller.positionPopover */
   display: none;
   align-items: center;
   gap: 8px;
@@ -24,8 +21,7 @@
   border: 1px solid var(--background-modifier-border);
   border-radius: var(--radius-m);
   box-shadow: var(--shadow-s);
-  /* 窄窗口（iPad 分屏）下不溢出 */
-  max-width: calc(100vw - 32px);
+  max-width: min(560px, calc(100vw - 16px));
   flex-wrap: wrap;
 }
 
