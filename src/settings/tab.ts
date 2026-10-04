@@ -1,7 +1,7 @@
 import { App, Notice, PluginSettingTab, Setting } from "obsidian";
 import { bytesToDataUri } from "../core/base64";
 import { encodeWav } from "../core/wav";
-import { transcribeAudio, type Transport } from "../speech/client";
+import { listModels, transcribeAudio, type Transport } from "../speech/client";
 import { loadVoices } from "../speech/tts-system";
 import type EchoReadPlugin from "../main";
 import { deleteSecret, hasSecret, loadSecret, saveSecret } from "./store";
@@ -277,6 +277,33 @@ export class EchoReadSettingTab extends PluginSettingTab {
           }
         }),
       );
+
+    new Setting(containerEl)
+      .setName("列出可用模型")
+      .setDesc(
+        "调用该渠道的 GET /models，确认某个模型 ID 在本渠道是否真的存在。" +
+          "完整列表会打印到控制台（Ctrl+Shift+I）。",
+      )
+      .addButton((button) =>
+        button.setButtonText("获取列表").onClick(async () => {
+          button.setDisabled(true);
+          button.setButtonText("获取中…");
+          try {
+            const ids = await this.runModelList();
+            console.log("[Echo Read] 该渠道可用模型：", ids);
+            const preview = ids.slice(0, 6).join("、");
+            new Notice(
+              `共 ${ids.length} 个模型：${preview}${ids.length > 6 ? " …" : ""}（完整列表见控制台）`,
+              15000,
+            );
+          } catch (error) {
+            new Notice(`获取失败：${messageOf(error)}`, 12000);
+          } finally {
+            button.setDisabled(false);
+            button.setButtonText("获取列表");
+          }
+        }),
+      );
   }
 
   private async runConnectionTest(): Promise<string> {
@@ -297,6 +324,13 @@ export class EchoReadSettingTab extends PluginSettingTab {
       },
       dataUri,
     );
+  }
+
+  private async runModelList(): Promise<string[]> {
+    const apiKey = this.plugin.unlockedApiKey;
+    if (!apiKey) throw new Error("尚未解锁 API Key。");
+    if (!this.plugin.settings.baseUrl) throw new Error("尚未填写接入地址。");
+    return listModels({ baseUrl: this.plugin.settings.baseUrl, apiKey });
   }
 }
 

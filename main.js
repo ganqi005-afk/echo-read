@@ -380,6 +380,34 @@ function safeStringify(value) {
   }
 }
 
+// src/speech/models.ts
+function extractModelIds(payload) {
+  if (!payload || typeof payload !== "object") {
+    throw new Error(`\u65E0\u6CD5\u89E3\u6790\u6A21\u578B\u5217\u8868\u54CD\u5E94\uFF1A${safeStringify2(payload)}`);
+  }
+  const data = payload.data;
+  if (!Array.isArray(data)) {
+    throw new Error(`\u6A21\u578B\u5217\u8868\u54CD\u5E94\u91CC\u6CA1\u6709 data \u6570\u7EC4\uFF1A${safeStringify2(payload)}`);
+  }
+  const ids = [];
+  for (const entry of data) {
+    if (entry && typeof entry === "object") {
+      const id = entry.id;
+      if (typeof id === "string" && id !== "") ids.push(id);
+    } else if (typeof entry === "string" && entry !== "") {
+      ids.push(entry);
+    }
+  }
+  return ids;
+}
+function safeStringify2(value) {
+  try {
+    return JSON.stringify(value).slice(0, 500);
+  } catch {
+    return "[\u65E0\u6CD5\u5E8F\u5217\u5316\u7684\u54CD\u5E94]";
+  }
+}
+
 // src/speech/client.ts
 var DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com";
 var DEFAULT_ASR_MODEL = "qwen-audio-3.0-asr-flash";
@@ -389,6 +417,26 @@ function buildEndpoint(baseUrl, transport) {
   const base = baseUrl.replace(/\/+$/, "");
   const path = transport === "openai-compatible" ? OPENAI_COMPATIBLE_PATH : DASHSCOPE_NATIVE_PATH;
   return `${base}${path}`;
+}
+async function listModels(options) {
+  if (!options.apiKey) throw new Error("\u5C1A\u672A\u914D\u7F6E API Key\u3002");
+  const url = `${options.baseUrl.replace(/\/+$/, "")}/models`;
+  const response = await (0, import_obsidian.requestUrl)({
+    url,
+    method: "GET",
+    headers: { Authorization: `Bearer ${options.apiKey}` },
+    throw: false
+  });
+  if (response.status < 200 || response.status >= 300) {
+    const body = response.text ?? "";
+    console.error("[Echo Read] \u83B7\u53D6\u6A21\u578B\u5217\u8868\u5931\u8D25", {
+      status: response.status,
+      url,
+      body
+    });
+    throw new Error(`\u83B7\u53D6\u6A21\u578B\u5217\u8868\u5931\u8D25\uFF08HTTP ${response.status}\uFF09\uFF1A${truncate(body, 400)}`);
+  }
+  return extractModelIds(response.json);
 }
 async function transcribeAudio(options, audioDataUri) {
   if (!options.apiKey) {
@@ -821,6 +869,28 @@ var EchoReadSettingTab = class extends import_obsidian3.PluginSettingTab {
         }
       })
     );
+    new import_obsidian3.Setting(containerEl).setName("\u5217\u51FA\u53EF\u7528\u6A21\u578B").setDesc(
+      "\u8C03\u7528\u8BE5\u6E20\u9053\u7684 GET /models\uFF0C\u786E\u8BA4\u67D0\u4E2A\u6A21\u578B ID \u5728\u672C\u6E20\u9053\u662F\u5426\u771F\u7684\u5B58\u5728\u3002\u5B8C\u6574\u5217\u8868\u4F1A\u6253\u5370\u5230\u63A7\u5236\u53F0\uFF08Ctrl+Shift+I\uFF09\u3002"
+    ).addButton(
+      (button) => button.setButtonText("\u83B7\u53D6\u5217\u8868").onClick(async () => {
+        button.setDisabled(true);
+        button.setButtonText("\u83B7\u53D6\u4E2D\u2026");
+        try {
+          const ids = await this.runModelList();
+          console.log("[Echo Read] \u8BE5\u6E20\u9053\u53EF\u7528\u6A21\u578B\uFF1A", ids);
+          const preview = ids.slice(0, 6).join("\u3001");
+          new import_obsidian3.Notice(
+            `\u5171 ${ids.length} \u4E2A\u6A21\u578B\uFF1A${preview}${ids.length > 6 ? " \u2026" : ""}\uFF08\u5B8C\u6574\u5217\u8868\u89C1\u63A7\u5236\u53F0\uFF09`,
+            15e3
+          );
+        } catch (error) {
+          new import_obsidian3.Notice(`\u83B7\u53D6\u5931\u8D25\uFF1A${messageOf(error)}`, 12e3);
+        } finally {
+          button.setDisabled(false);
+          button.setButtonText("\u83B7\u53D6\u5217\u8868");
+        }
+      })
+    );
   }
   async runConnectionTest() {
     const apiKey = this.plugin.unlockedApiKey;
@@ -838,6 +908,12 @@ var EchoReadSettingTab = class extends import_obsidian3.PluginSettingTab {
       },
       dataUri
     );
+  }
+  async runModelList() {
+    const apiKey = this.plugin.unlockedApiKey;
+    if (!apiKey) throw new Error("\u5C1A\u672A\u89E3\u9501 API Key\u3002");
+    if (!this.plugin.settings.baseUrl) throw new Error("\u5C1A\u672A\u586B\u5199\u63A5\u5165\u5730\u5740\u3002");
+    return listModels({ baseUrl: this.plugin.settings.baseUrl, apiKey });
   }
 };
 function messageOf(error) {

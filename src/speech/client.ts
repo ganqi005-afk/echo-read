@@ -4,6 +4,7 @@ import {
   buildOpenAiCompatibleBody,
   extractTranscript,
 } from "./asr-request";
+import { extractModelIds } from "./models";
 
 export const DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com";
 export const DEFAULT_ASR_MODEL = "qwen-audio-3.0-asr-flash";
@@ -25,6 +26,37 @@ export function buildEndpoint(baseUrl: string, transport: Transport): string {
   const base = baseUrl.replace(/\/+$/, "");
   const path = transport === "openai-compatible" ? OPENAI_COMPATIBLE_PATH : DASHSCOPE_NATIVE_PATH;
   return `${base}${path}`;
+}
+
+/**
+ * 列出该渠道可用的模型。用于确认某个模型 ID 在本渠道是否真的存在 ——
+ * 这比对着文档猜模型名可靠得多。
+ */
+export async function listModels(options: {
+  baseUrl: string;
+  apiKey: string;
+}): Promise<string[]> {
+  if (!options.apiKey) throw new Error("尚未配置 API Key。");
+
+  const url = `${options.baseUrl.replace(/\/+$/, "")}/models`;
+  const response = await requestUrl({
+    url,
+    method: "GET",
+    headers: { Authorization: `Bearer ${options.apiKey}` },
+    throw: false,
+  });
+
+  if (response.status < 200 || response.status >= 300) {
+    const body = response.text ?? "";
+    console.error("[Echo Read] 获取模型列表失败", {
+      status: response.status,
+      url,
+      body,
+    });
+    throw new Error(`获取模型列表失败（HTTP ${response.status}）：${truncate(body, 400)}`);
+  }
+
+  return extractModelIds(response.json);
 }
 
 /**
