@@ -35,6 +35,25 @@ export function guessMimeType(format: string): string {
 }
 
 /**
+ * 可展示的请求体预览。注意 HTTP 接口与 WebSocket 接口的组织方式不同：
+ * WebSocket 用单独的 continue-task 消息发文本，而 HTTP 把文本直接放在
+ * input.text 里，与参数同在一个请求体。预览让这一点可见、可核对。
+ */
+export function previewTtsBody(options: TtsClientOptions, text: string): string {
+  return JSON.stringify(
+    buildTtsBody({
+      model: options.model,
+      text,
+      voice: options.voice,
+      format: options.format ?? "mp3",
+      sampleRate: options.sampleRate ?? 24000,
+    }),
+    null,
+    2,
+  );
+}
+
+/**
  * 云端语音合成（HTTP，非流式）。
  *
  * 关键点：返回的是**会过期的 OSS 链接**（带 expires_at），所以这里立刻下载

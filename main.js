@@ -849,6 +849,19 @@ function guessMimeType(format) {
       return "application/octet-stream";
   }
 }
+function previewTtsBody(options, text) {
+  return JSON.stringify(
+    buildTtsBody({
+      model: options.model,
+      text,
+      voice: options.voice,
+      format: options.format ?? "mp3",
+      sampleRate: options.sampleRate ?? 24e3
+    }),
+    null,
+    2
+  );
+}
 async function synthesizeSpeech(options, text) {
   if (!options.apiKey) throw new Error("尚未配置 API Key。");
   if (!options.voice) throw new Error("尚未配置音色 —— 合成接口的 voice 是必填项。");
@@ -1333,15 +1346,12 @@ var EchoReadSettingTab = class extends import_obsidian5.PluginSettingTab {
       (button) => button.setButtonText("试听").onClick(async () => {
         button.setDisabled(true);
         button.setButtonText("合成中…");
-        try {
-          const note = await this.auditionCloudVoice();
-          new import_obsidian5.Notice(`试听成功（${note}）。`);
-        } catch (error) {
-          new import_obsidian5.Notice(`试听失败：${messageOf2(error)}`, 12e3);
-        } finally {
-          button.setDisabled(false);
-          button.setButtonText("试听");
-        }
+        await this.runWithDiagnostics(
+          button,
+          "试听",
+          "合成中…",
+          () => this.auditionCloudVoice()
+        );
       })
     );
   }
@@ -1353,6 +1363,14 @@ var EchoReadSettingTab = class extends import_obsidian5.PluginSettingTab {
     if (!ttsVoice) throw new Error("尚未填写音色 —— 合成接口的 voice 是必填项。");
     const format = "mp3";
     const text = "The plan is ready.";
+    this.appendDiagnostic(`合成地址：${ttsBaseUrl}/api/v1/services/audio/tts/SpeechSynthesizer`);
+    this.appendDiagnostic(
+      `请求体预览：
+${previewTtsBody(
+        { baseUrl: ttsBaseUrl, apiKey, model: ttsModel, voice: ttsVoice, format },
+        text
+      )}`
+    );
     const path = await audioCachePath(text, ttsVoice, ttsModel, format);
     let bytes = await readCachedAudio(this.app, path);
     const cached = bytes !== void 0;
@@ -1365,7 +1383,11 @@ var EchoReadSettingTab = class extends import_obsidian5.PluginSettingTab {
       await writeCachedAudio(this.app, path, bytes);
     }
     await this.playAudioBytes(bytes, guessMimeType(format));
-    return cached ? "命中缓存，未产生费用" : `已缓存到 ${path}`;
+    return [
+      `待合成文本：${text}`,
+      `音频字节：${bytes.byteLength} B`,
+      cached ? "命中缓存，未产生费用" : `已缓存到 ${path}`
+    ].join("\n");
   }
   async playAudioBytes(bytes, mimeType) {
     const url = URL.createObjectURL(new Blob([bytes], { type: mimeType }));
@@ -1454,7 +1476,7 @@ ${ids.join("\n")}`;
   }
   async runWithDiagnostics(button, idleLabel, busyLabel, action) {
     this.diagnosticLines = [];
-    this.appendDiagnostic(`构建时间：${"2026-10-04T05:08:53.931Z"}`);
+    this.appendDiagnostic(`构建时间：${"2026-10-04T05:42:34.319Z"}`);
     this.appendDiagnostic(`时间：${(/* @__PURE__ */ new Date()).toLocaleString()}`);
     this.appendDiagnostic(`协议：${this.plugin.settings.transport}`);
     this.appendDiagnostic(`模型：${this.plugin.settings.asrModel}`);

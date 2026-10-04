@@ -11,7 +11,7 @@ import {
 } from "../speech/client";
 import { describeProbeOutcome } from "../speech/key-probe";
 import { loadVoices } from "../speech/tts-system";
-import { guessMimeType, synthesizeSpeech } from "../speech/tts-client";
+import { guessMimeType, previewTtsBody, synthesizeSpeech } from "../speech/tts-client";
 import type EchoReadPlugin from "../main";
 import { audioCachePath, readCachedAudio, writeCachedAudio } from "../store/audio-cache";
 import { deleteTestSample, hasTestSample, loadTestSample } from "../store/sample";
@@ -329,15 +329,9 @@ export class EchoReadSettingTab extends PluginSettingTab {
         button.setButtonText("试听").onClick(async () => {
           button.setDisabled(true);
           button.setButtonText("合成中…");
-          try {
-            const note = await this.auditionCloudVoice();
-            new Notice(`试听成功（${note}）。`);
-          } catch (error) {
-            new Notice(`试听失败：${messageOf(error)}`, 12000);
-          } finally {
-            button.setDisabled(false);
-            button.setButtonText("试听");
-          }
+          await this.runWithDiagnostics(button, "试听", "合成中…", () =>
+            this.auditionCloudVoice(),
+          );
         }),
       );
   }
@@ -352,6 +346,15 @@ export class EchoReadSettingTab extends PluginSettingTab {
 
     const format = "mp3";
     const text = "The plan is ready.";
+
+    this.appendDiagnostic(`合成地址：${ttsBaseUrl}/api/v1/services/audio/tts/SpeechSynthesizer`);
+    this.appendDiagnostic(
+      `请求体预览：\n${previewTtsBody(
+        { baseUrl: ttsBaseUrl, apiKey, model: ttsModel, voice: ttsVoice, format },
+        text,
+      )}`,
+    );
+
     const path = await audioCachePath(text, ttsVoice, ttsModel, format);
 
     let bytes = await readCachedAudio(this.app, path);
@@ -366,7 +369,11 @@ export class EchoReadSettingTab extends PluginSettingTab {
     }
 
     await this.playAudioBytes(bytes, guessMimeType(format));
-    return cached ? "命中缓存，未产生费用" : `已缓存到 ${path}`;
+    return [
+      `待合成文本：${text}`,
+      `音频字节：${bytes.byteLength} B`,
+      cached ? "命中缓存，未产生费用" : `已缓存到 ${path}`,
+    ].join("\n");
   }
 
   private async playAudioBytes(bytes: ArrayBuffer, mimeType: string): Promise<void> {
