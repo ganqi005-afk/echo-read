@@ -424,7 +424,7 @@ function buildProbeBody(model, transport) {
 function classifyKeyProbe(status, body) {
   if (status === 401 || status === 403) return "invalid";
   if (status >= 200 && status < 300) return "valid";
-  if (status === 400 && looksLikeServiceError(body)) return "valid";
+  if (looksLikeServiceError(body)) return "valid";
   return "unknown";
 }
 function looksLikeServiceError(body) {
@@ -435,7 +435,7 @@ function looksLikeServiceError(body) {
 function describeProbeOutcome(result) {
   switch (result.outcome) {
     case "valid":
-      return `Key 可用（HTTP ${result.status}）。服务端已通过鉴权，返回的是业务层错误 —— 这是预期结果，因为探测请求本来就不完整。`;
+      return `鉴权已通过（HTTP ${result.status}）。服务端返回的是业务层或上游的错误 —— 探测请求本来就不完整，出现这个结果是预期内的。`;
     case "invalid":
       return `Key 被拒绝（HTTP ${result.status}）。请检查这把 Key 是否属于当前端点对应的平台与套餐。`;
     default:
@@ -1056,7 +1056,7 @@ ${ids.join("\n")}`;
   }
   async runWithDiagnostics(button, idleLabel, busyLabel, action) {
     this.diagnosticLines = [];
-    this.appendDiagnostic(`构建时间：${"2026-10-04T04:50:42.297Z"}`);
+    this.appendDiagnostic(`构建时间：${"2026-10-04T04:52:38.225Z"}`);
     this.appendDiagnostic(`时间：${(/* @__PURE__ */ new Date()).toLocaleString()}`);
     this.appendDiagnostic(`协议：${this.plugin.settings.transport}`);
     this.appendDiagnostic(`模型：${this.plugin.settings.asrModel}`);

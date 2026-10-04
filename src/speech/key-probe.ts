@@ -28,15 +28,21 @@ export function buildProbeBody(model: string, transport: Transport): unknown {
 
 /**
  * 分类服务端的回应。
- * 注意 400 有两种截然不同的含义：
- * - 带 request_id / code 的 400 → 鉴权已通过，是参数问题 → Key 有效
- * - 空的 `{}` 400 → 网关层就拒了，判断不了 → unknown
- * 这个区分很重要，因为 400 + {} 正是我们踩过的坑。
+ *
+ * 判据是「服务端有没有走到业务层」，而不是状态码本身：
+ * - 401 / 403 → 鉴权阶段就被拦下 → Key 不可用
+ * - 带 request_id 的错误信封（400 / 500 都算）→ 网关已通过鉴权并转发，
+ *   后面是业务层或上游的问题 → **说明 Key 是被接受的**
+ * - 空的 `{}` → 网关层直接拒绝，什么都没说 → 判断不了
+ *
+ * 之所以把 500 也算作「已通过鉴权」：实测中探测请求（空 messages）会触发
+ * `InternalError: Empty response received from upstream`，这是网关**已经转发**
+ * 之后上游才会产生的错误。若 Key 无效，根本走不到这一步。
  */
 export function classifyKeyProbe(status: number, body: unknown): KeyProbeOutcome {
   if (status === 401 || status === 403) return "invalid";
   if (status >= 200 && status < 300) return "valid";
-  if (status === 400 && looksLikeServiceError(body)) return "valid";
+  if (looksLikeServiceError(body)) return "valid";
   return "unknown";
 }
 
@@ -49,7 +55,7 @@ function looksLikeServiceError(body: unknown): boolean {
 export function describeProbeOutcome(result: KeyProbeResult): string {
   switch (result.outcome) {
     case "valid":
-      return `Key 可用（HTTP ${result.status}）。服务端已通过鉴权，返回的是业务层错误 —— 这是预期结果，因为探测请求本来就不完整。`;
+      return `鉴权已通过（HTTP ${result.status}）。服务端返回的是业务层或上游的错误 —— 探测请求本来就不完整，出现这个结果是预期内的。`;
     case "invalid":
       return `Key 被拒绝（HTTP ${result.status}）。请检查这把 Key 是否属于当前端点对应的平台与套餐。`;
     default:

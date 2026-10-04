@@ -40,7 +40,18 @@ describe("classifyKeyProbe", () => {
     expect(classifyKeyProbe(400, undefined)).toBe("unknown");
   });
 
-  it("reports 5xx as unknown", () => {
+  // 实测：探测请求会触发 "Empty response received from upstream" 的 500，
+  // 那是网关转发之后上游才会报的错，说明 Key 已被接受。
+  it("treats a structured 500 as proof the key passed authentication", () => {
+    const body = {
+      code: "InternalError",
+      message: "Empty response received from upstream",
+      request_id: "b47cec27",
+    };
+    expect(classifyKeyProbe(500, body)).toBe("valid");
+  });
+
+  it("still reports an unstructured 5xx as unknown", () => {
     expect(classifyKeyProbe(500, {})).toBe("unknown");
   });
 });
