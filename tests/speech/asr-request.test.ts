@@ -8,7 +8,7 @@ import {
 interface LooseBody {
   model: string;
   input: { messages: Array<{ role: string; content: Array<{ type: string; input_audio: { data: string } }> }> };
-  parameters: { format: string; sample_rate: number };
+  parameters: { format: string; sample_rate: string };
 }
 
 interface OpenAiBody {
@@ -37,13 +37,16 @@ describe("buildAsrBody", () => {
     expect(body.parameters.format).toBe("wav");
   });
 
-  it("passes the sample rate through", () => {
+  // 官方 HTTP API 示例里写的是 "sample_rate": "16000"（带引号）。
+  // 这是逐字对齐文档，不是笔误 —— 类型不符会让服务端直接拒绝。
+  it("sends the sample rate as a string, matching the documented example", () => {
     const body = buildAsrBody({
       model: "m",
       audioDataUri: "data:audio/wav;base64,AAAA",
       sampleRate: 16000,
     }) as LooseBody;
-    expect(body.parameters.sample_rate).toBe(16000);
+    expect(body.parameters.sample_rate).toBe("16000");
+    expect(typeof body.parameters.sample_rate).toBe("string");
   });
 });
 

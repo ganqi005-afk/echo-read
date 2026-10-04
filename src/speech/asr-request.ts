@@ -20,7 +20,9 @@ export function buildAsrBody(options: AsrRequestOptions): unknown {
     },
     parameters: {
       format: options.format ?? "wav",
-      sample_rate: options.sampleRate ?? 16000,
+      // 官方示例里 sample_rate 是**字符串**（"16000"），不是数字。
+      // 按文档逐字对齐，避免服务端因类型不符直接拒绝。
+      sample_rate: String(options.sampleRate ?? 16000),
     },
   };
 }

@@ -309,7 +309,9 @@ function buildAsrBody(options) {
     },
     parameters: {
       format: options.format ?? "wav",
-      sample_rate: options.sampleRate ?? 16e3
+      // 官方示例里 sample_rate 是**字符串**（"16000"），不是数字。
+      // 按文档逐字对齐，避免服务端因类型不符直接拒绝。
+      sample_rate: String(options.sampleRate ?? 16e3)
     }
   };
 }
@@ -660,6 +662,22 @@ var PROVIDER_PRESETS = [
     baseUrl: "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
     keyPrefixHint: "sk-sp-",
     note: "\u6309 Credits \u62B5\u6263\u3002\u8BE5\u6E20\u9053\u662F\u5426\u8986\u76D6\u8BED\u97F3\u8BC6\u522B\u4E0E\u5408\u6210\u6A21\u578B\u5C1A\u672A\u9A8C\u8BC1\uFF0C\u8BF7\u7528\u300C\u6D4B\u8BD5\u8FDE\u63A5\u300D\u786E\u8BA4\u3002"
+  },
+  {
+    id: "qianwen-speech",
+    name: "\u5343\u95EEAI\u5E73\u53F0 \xB7 \u8BED\u97F3\u63A5\u53E3\uFF08DashScope \u539F\u751F\uFF09",
+    transport: "dashscope-native",
+    baseUrl: "https://maas.qianwenaiapi.com",
+    keyPrefixHint: "sk-",
+    note: "qwen-audio-3.x-asr-flash \u5728\u8FD9\u5BB6\u5E73\u53F0\u4E0A\u8D70 DashScope \u539F\u751F\u534F\u8BAE\u3002\u8BED\u97F3\u6A21\u578B\u8BF7\u7528\u8FD9\u4E00\u9879\uFF0C\u4E0D\u8981\u7528 Token Plan \u7AEF\u70B9\u3002"
+  },
+  {
+    id: "qianwen-token-plan",
+    name: "\u5343\u95EEAI\u5E73\u53F0 \xB7 Token Plan\uFF08OpenAI \u517C\u5BB9\uFF09",
+    transport: "openai-compatible",
+    baseUrl: "https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1",
+    keyPrefixHint: "sk-",
+    note: "\u8FD9\u662F Token Plan \u7684\u804A\u5929\u7AEF\u70B9\u3002\u7528\u5B83\u8C03\u8BED\u97F3\u6A21\u578B\u4F1A\u8FD4\u56DE\u7A7A\u7684 400\uFF0C\u8BED\u97F3\u8BF7\u6539\u7528\u4E0A\u4E00\u9879\u3002"
   },
   {
     id: "custom",
