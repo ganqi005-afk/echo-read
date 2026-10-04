@@ -322,9 +322,9 @@ export class ReadingController {
       const dataUri = bytesToDataUri(new Uint8Array(wav), "audio/wav");
 
       const settings = this.plugin.settings;
-      const apiKey = this.plugin.unlockedKeys[settings.asrKeyId];
+      const apiKey = this.plugin.apiKeys[settings.asrKeyId];
       if (!settings.asrKeyId || !apiKey) {
-        throw new Error("语音识别尚未绑定或解锁 Key，请到插件设置里处理。");
+        throw new Error("语音识别尚未绑定 Key 或 Key 为空，请到插件设置里处理。");
       }
 
       const text = await transcribeAudio(

@@ -23,9 +23,9 @@ import {
 import {
   deleteKey,
   listKeys,
+  loadKeyValues,
   makeKeyId,
   saveKey,
-  unlockAllKeys,
   type KeySummary,
 } from "./store";
 import {
@@ -44,7 +44,6 @@ const TRANSPORT_LABELS: Record<Transport, string> = {
 export class EchoReadSettingTab extends PluginSettingTab {
   private readonly plugin: EchoReadPlugin;
   private keys: KeySummary[] = [];
-  private passphrase = "";
   private newKeyLabel = "";
   private newKeyValue = "";
   private diagnosticEl: HTMLElement | null = null;
@@ -82,7 +81,7 @@ export class EchoReadSettingTab extends PluginSettingTab {
     containerEl.createEl("p", {
       cls: "setting-item-description",
       text:
-        "所有 Key 用同一个口令加密保存到 _lingo/secrets.json，口令不落盘。" +
+        "Key 明文保存在 _lingo/keys.json，会随 vault 一起同步到云端。" +
         "不同能力可以绑定不同的 Key —— 例如语音用普通 Key、文本用 Token Plan 的 Key。",
     });
 
@@ -94,10 +93,13 @@ export class EchoReadSettingTab extends PluginSettingTab {
     }
 
     for (const key of this.keys) {
-      const unlocked = this.plugin.unlockedKeys[key.id] !== undefined;
       new Setting(containerEl)
         .setName(key.label)
-        .setDesc(`${describeApiKeyKind(key.kind)}　·　${unlocked ? "已解锁" : "未解锁"}`)
+        .setDesc(
+          key.hasValue
+            ? describeApiKeyKind(key.kind)
+            : `${describeApiKeyKind(key.kind)}　·　⚠ 值为空，需要重新填写`,
+        )
         .addButton((button) =>
           button.setButtonText("删除").setWarning().onClick(async () => {
             await deleteKey(this.app, key.id);
@@ -123,10 +125,6 @@ export class EchoReadSettingTab extends PluginSettingTab {
       })
       .addButton((button) =>
         button.setButtonText("保存").setCta().onClick(async () => {
-          if (!this.passphrase) {
-            new Notice("请先填写下方的加密口令。");
-            return;
-          }
           if (!this.newKeyLabel.trim() || !this.newKeyValue.trim()) {
             new Notice("名称和 Key 都要填。");
             return;
@@ -136,39 +134,14 @@ export class EchoReadSettingTab extends PluginSettingTab {
             this.newKeyLabel,
           );
           try {
-            await saveKey(this.app, id, this.newKeyLabel.trim(), this.newKeyValue.trim(), this.passphrase);
-            this.plugin.unlockedKeys[id] = this.newKeyValue.trim();
+            await saveKey(this.app, id, this.newKeyLabel.trim(), this.newKeyValue.trim());
+            this.plugin.apiKeys = await loadKeyValues(this.app);
             this.newKeyLabel = "";
             this.newKeyValue = "";
-            new Notice("已加密保存并解锁。");
+            new Notice("已保存。");
             this.display();
           } catch (error) {
             new Notice(`保存失败：${messageOf(error)}`);
-          }
-        }),
-      );
-
-    new Setting(containerEl)
-      .setName("加密口令")
-      .setDesc("同一个口令解锁全部 Key。忘记口令只能重新填写一次各个 Key，不会丢失其他数据。")
-      .addText((text) => {
-        text.inputEl.type = "password";
-        text.setPlaceholder("本设备口令").onChange((value) => {
-          this.passphrase = value;
-        });
-      })
-      .addButton((button) =>
-        button.setButtonText("解锁全部").onClick(async () => {
-          if (!this.passphrase) {
-            new Notice("请先填写加密口令。");
-            return;
-          }
-          try {
-            this.plugin.unlockedKeys = await unlockAllKeys(this.app, this.passphrase);
-            new Notice(`已解锁 ${Object.keys(this.plugin.unlockedKeys).length} 把 Key。`);
-            this.display();
-          } catch {
-            new Notice("解锁失败：口令不正确。");
           }
         }),
       );
@@ -575,8 +548,10 @@ export class EchoReadSettingTab extends PluginSettingTab {
 
   private requireKey(keyId: string, capability: string): string {
     if (!keyId) throw new Error(`尚未为「${capability}」绑定 Key。`);
-    const value = this.plugin.unlockedKeys[keyId];
-    if (!value) throw new Error(`「${this.describeBoundKey(keyId)}」尚未解锁，请先点「解锁全部」。`);
+    const value = this.plugin.apiKeys[keyId];
+    if (!value) {
+      throw new Error(`「${this.describeBoundKey(keyId)}」的值是空的，请到「密钥」里重新填写。`);
+    }
     return value;
   }
 

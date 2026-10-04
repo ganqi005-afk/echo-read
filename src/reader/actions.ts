@@ -34,9 +34,9 @@ export async function speakSentence(
     return "cache";
   }
 
-  const apiKey = plugin.unlockedKeys[settings.ttsKeyId];
+  const apiKey = plugin.apiKeys[settings.ttsKeyId];
   if (!settings.ttsKeyId || !apiKey) {
-    throw new Error("云端合成尚未绑定或解锁 Key，请到插件设置里处理。");
+    throw new Error("云端合成尚未绑定 Key 或 Key 为空，请到插件设置里处理。");
   }
   if (!settings.ttsVoice) {
     throw new Error("云端合成缺少音色，请到插件设置里填写。");

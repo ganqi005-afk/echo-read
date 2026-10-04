@@ -1,35 +1,30 @@
 import { describe, expect, it } from "vitest";
-import {
-  listKeySummaries,
-  makeKeyId,
-  migrateSecrets,
-  type SecretsFile,
-} from "../../src/settings/store";
-import type { SecretBlob } from "../../src/store/secrets";
+import { listKeySummaries, makeKeyId, migrateKeys } from "../../src/settings/store";
 
-const BLOB: SecretBlob = {
-  v: 1,
-  kdf: "PBKDF2-SHA256",
-  iter: 1,
-  salt: "a",
-  iv: "b",
-  ct: "c",
-};
-
-describe("migrateSecrets", () => {
-  it("moves a legacy single key into the named list", () => {
-    const migrated = migrateSecrets({ bailianApiKey: BLOB });
-    expect(Object.keys(migrated.keys ?? {})).toEqual(["legacy"]);
-    expect(migrated.keys?.legacy.blob).toBe(BLOB);
+describe("migrateKeys", () => {
+  // 旧的加密记录无法在没有口令的情况下还原：留空值，但保住标签，
+  // 用户至少知道要重填哪几把，而不是面对一片空白
+  it("blanks the value of a legacy encrypted record but keeps its label", () => {
+    const migrated = migrateKeys({
+      keys: { a: { label: "语音", kind: "standard", blob: { ct: "x" } } },
+    });
+    expect(migrated.keys?.a.label).toBe("语音");
+    expect(migrated.keys?.a.value).toBe("");
   });
 
-  it("leaves an already-migrated file untouched", () => {
-    const file: SecretsFile = { keys: { a: { label: "A", kind: "standard", blob: BLOB } } };
-    expect(migrateSecrets(file)).toBe(file);
+  it("keeps an existing plaintext value", () => {
+    const migrated = migrateKeys({
+      keys: { a: { label: "A", kind: "standard", value: "sk-abc" } },
+    });
+    expect(migrated.keys?.a.value).toBe("sk-abc");
+  });
+
+  it("falls back to the id when a record has no label", () => {
+    expect(migrateKeys({ keys: { a: {} } }).keys?.a.label).toBe("a");
   });
 
   it("returns an empty key list for an empty file", () => {
-    expect(migrateSecrets({}).keys).toEqual({});
+    expect(migrateKeys({}).keys).toEqual({});
   });
 });
 
@@ -49,21 +44,21 @@ describe("makeKeyId", () => {
 });
 
 describe("listKeySummaries", () => {
-  it("lists id, label and kind sorted by label", () => {
-    const file: SecretsFile = {
-      keys: {
-        b: { label: "乙", kind: "standard", blob: BLOB },
-        a: { label: "甲", kind: "token-plan", blob: BLOB },
-      },
-    };
-    expect(listKeySummaries(file)).toEqual([
-      { id: "a", label: "甲", kind: "token-plan" },
-      { id: "b", label: "乙", kind: "standard" },
-    ]);
+  const file = {
+    keys: {
+      empty: { label: "空", kind: "standard" as const, value: "" },
+      filled: { label: "满", kind: "token-plan" as const, value: "sk-sp-1" },
+    },
+  };
+
+  it("flags which keys still need a value", () => {
+    const byId = new Map(listKeySummaries(file).map((key) => [key.id, key]));
+    expect(byId.get("filled")?.hasValue).toBe(true);
+    expect(byId.get("empty")?.hasValue).toBe(false);
   });
 
-  it("never exposes the encrypted blob", () => {
-    const file: SecretsFile = { keys: { a: { label: "甲", kind: "standard", blob: BLOB } } };
-    expect(JSON.stringify(listKeySummaries(file))).not.toContain("\"ct\"");
+  it("carries the key kind through for display", () => {
+    const byId = new Map(listKeySummaries(file).map((key) => [key.id, key]));
+    expect(byId.get("filled")?.kind).toBe("token-plan");
   });
 });

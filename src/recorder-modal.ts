@@ -182,9 +182,9 @@ export class RecorderModal extends Modal {
 
   private async transcribe(): Promise<void> {
     const { asrKeyId, asrBaseUrl, asrModel, asrTransport } = this.plugin.settings;
-    const apiKey = this.plugin.unlockedKeys[asrKeyId];
+    const apiKey = this.plugin.apiKeys[asrKeyId];
     if (!asrKeyId || !apiKey) {
-      new Notice("请先在插件设置里为「语音识别」绑定并解锁一把 Key。");
+      new Notice("请先在插件设置里为「语音识别」绑定一把 Key。");
       return;
     }
     if (!this.wavBuffer) {

@@ -8,5 +8,5 @@ node_modules/
 # 插件数据（缓存不是数据，不进版本历史）
 _lingo/audio/
 _lingo/recordings/
-_lingo/secrets.json
+_lingo/keys.json
 _lingo/test-sample.wav
