@@ -1,7 +1,13 @@
 import { App, Notice, PluginSettingTab, Setting } from "obsidian";
 import { bytesToDataUri } from "../core/base64";
 import { encodeWav } from "../core/wav";
-import { listModels, transcribeAudio, type Transport } from "../speech/client";
+import {
+  buildEndpoint,
+  listModels,
+  previewRequestBody,
+  transcribeAudio,
+  type Transport,
+} from "../speech/client";
 import { loadVoices } from "../speech/tts-system";
 import type EchoReadPlugin from "../main";
 import { deleteSecret, hasSecret, loadSecret, saveSecret } from "./store";
@@ -21,6 +27,8 @@ export class EchoReadSettingTab extends PluginSettingTab {
   private readonly plugin: EchoReadPlugin;
   private passphrase = "";
   private keyDraft = "";
+  private diagnosticEl: HTMLElement | null = null;
+  private diagnosticLines: string[] = [];
 
   constructor(app: App, plugin: EchoReadPlugin) {
     super(app, plugin);
@@ -256,25 +264,27 @@ export class EchoReadSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.createEl("h3", { text: "诊断" });
 
+    const endpoint = this.plugin.settings.baseUrl
+      ? buildEndpoint(this.plugin.settings.baseUrl, this.plugin.settings.transport)
+      : "（尚未填写接入地址）";
+    containerEl.createEl("p", {
+      text: `实际请求地址：${endpoint}`,
+      cls: "setting-item-description",
+    });
+
     new Setting(containerEl)
       .setName("测试连接")
       .setDesc(
-        "发送 0.3 秒静音音频做一次真实识别请求，用来确认鉴权与协议是否匹配。" +
-          "Token Plan 是否支持语音模型，靠这一项就能验证。",
+        "发送 1.5 秒静音音频做一次真实识别请求。用静音是因为不需要麦克风，" +
+          "但它也可能被服务端判为「没有语音」——那种失败不代表配置有问题。",
       )
       .addButton((button) =>
         button.setButtonText("开始测试").onClick(async () => {
           button.setDisabled(true);
           button.setButtonText("测试中…");
-          try {
-            const result = await this.runConnectionTest();
-            new Notice(`连接成功。返回文本：「${result || "（空）"}」`, 8000);
-          } catch (error) {
-            new Notice(`连接失败：${messageOf(error)}`, 12000);
-          } finally {
-            button.setDisabled(false);
-            button.setButtonText("开始测试");
-          }
+          await this.runWithDiagnostics(button, "开始测试", "测试中…", () =>
+            this.runConnectionTest(),
+          );
         }),
       );
 
@@ -288,22 +298,69 @@ export class EchoReadSettingTab extends PluginSettingTab {
         button.setButtonText("获取列表").onClick(async () => {
           button.setDisabled(true);
           button.setButtonText("获取中…");
-          try {
+          await this.runWithDiagnostics(button, "获取列表", "获取中…", async () => {
             const ids = await this.runModelList();
-            console.log("[Echo Read] 该渠道可用模型：", ids);
-            const preview = ids.slice(0, 6).join("、");
-            new Notice(
-              `共 ${ids.length} 个模型：${preview}${ids.length > 6 ? " …" : ""}（完整列表见控制台）`,
-              15000,
-            );
-          } catch (error) {
-            new Notice(`获取失败：${messageOf(error)}`, 12000);
-          } finally {
-            button.setDisabled(false);
-            button.setButtonText("获取列表");
+            return `共 ${ids.length} 个模型：\n${ids.join("\n")}`;
+          });
+        }),
+      );
+
+    this.diagnosticEl = containerEl.createEl("pre", { cls: "echo-read-diagnostic" });
+    this.diagnosticEl.style.whiteSpace = "pre-wrap";
+    this.diagnosticEl.style.userSelect = "text";
+    this.diagnosticEl.style.maxHeight = "320px";
+    this.diagnosticEl.style.overflow = "auto";
+    this.diagnosticEl.style.fontSize = "12px";
+    this.diagnosticEl.style.lineHeight = "1.5";
+    this.diagnosticEl.setText(this.diagnosticLines.join("\n"));
+
+    new Setting(containerEl)
+      .setName("复制诊断信息")
+      .setDesc("把上面的内容复制到剪贴板，便于排查。")
+      .addButton((button) =>
+        button.setButtonText("复制").onClick(async () => {
+          try {
+            await navigator.clipboard.writeText(this.diagnosticLines.join("\n"));
+            new Notice("已复制。");
+          } catch {
+            new Notice("复制失败，请手动选中上面的文本。");
           }
         }),
       );
+  }
+
+  private async runWithDiagnostics(
+    button: { setDisabled(value: boolean): unknown; setButtonText(value: string): unknown },
+    idleLabel: string,
+    busyLabel: string,
+    action: () => Promise<string>,
+  ): Promise<void> {
+    this.diagnosticLines = [];
+    this.appendDiagnostic(`时间：${new Date().toLocaleString()}`);
+    this.appendDiagnostic(`协议：${this.plugin.settings.transport}`);
+    this.appendDiagnostic(`模型：${this.plugin.settings.asrModel}`);
+    this.appendDiagnostic(
+      `Key：${this.plugin.unlockedApiKey ? "已解锁" : "未解锁（请先点「仅解锁」）"}`,
+    );
+
+    try {
+      const result = await action();
+      this.appendDiagnostic("结果：成功");
+      this.appendDiagnostic(result);
+      new Notice("成功，详见下方诊断信息。", 8000);
+    } catch (error) {
+      this.appendDiagnostic("结果：失败");
+      this.appendDiagnostic(messageOf(error));
+      new Notice("失败，详见下方诊断信息。", 8000);
+    } finally {
+      button.setDisabled(false);
+      button.setButtonText(idleLabel);
+    }
+  }
+
+  private appendDiagnostic(line: string): void {
+    this.diagnosticLines.push(line);
+    this.diagnosticEl?.setText(this.diagnosticLines.join("\n"));
   }
 
   private async runConnectionTest(): Promise<string> {
@@ -311,9 +368,21 @@ export class EchoReadSettingTab extends PluginSettingTab {
     if (!apiKey) throw new Error("尚未解锁 API Key。");
     if (!this.plugin.settings.baseUrl) throw new Error("尚未填写接入地址。");
 
-    const silence = new Float32Array(16000 * 0.3);
+    const silence = new Float32Array(16000 * 1.5);
     const wav = encodeWav(silence, 16000);
     const dataUri = bytesToDataUri(new Uint8Array(wav), "audio/wav");
+
+    this.appendDiagnostic(`请求地址：${buildEndpoint(this.plugin.settings.baseUrl, this.plugin.settings.transport)}`);
+    this.appendDiagnostic(`音频：1.5 秒静音 WAV，base64 后 ${Math.round(dataUri.length / 1024)} KB`);
+    this.appendDiagnostic(
+      `请求体预览：\n${previewRequestBody(
+        {
+          transport: this.plugin.settings.transport,
+          model: this.plugin.settings.asrModel,
+        },
+        dataUri,
+      )}`,
+    );
 
     return transcribeAudio(
       {

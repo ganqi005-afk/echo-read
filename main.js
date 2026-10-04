@@ -418,6 +418,17 @@ function buildEndpoint(baseUrl, transport) {
   const path = transport === "openai-compatible" ? OPENAI_COMPATIBLE_PATH : DASHSCOPE_NATIVE_PATH;
   return `${base}${path}`;
 }
+function previewRequestBody(options, audioDataUri) {
+  const body = options.transport === "openai-compatible" ? buildOpenAiCompatibleBody({
+    model: options.model,
+    audioDataUri,
+    sampleRate: 16e3
+  }) : buildAsrBody({ model: options.model, audioDataUri, sampleRate: 16e3 });
+  return JSON.stringify(body, null, 2).replaceAll(
+    audioDataUri,
+    `\xABbase64 \u97F3\u9891\uFF0C${audioDataUri.length} \u5B57\u7B26\xBB`
+  );
+}
 async function listModels(options) {
   if (!options.apiKey) throw new Error("\u5C1A\u672A\u914D\u7F6E API Key\u3002");
   const url = `${options.baseUrl.replace(/\/+$/, "")}/models`;
@@ -690,6 +701,8 @@ var EchoReadSettingTab = class extends import_obsidian3.PluginSettingTab {
   plugin;
   passphrase = "";
   keyDraft = "";
+  diagnosticEl = null;
+  diagnosticLines = [];
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -852,21 +865,23 @@ var EchoReadSettingTab = class extends import_obsidian3.PluginSettingTab {
   renderDiagnostics() {
     const { containerEl } = this;
     containerEl.createEl("h3", { text: "\u8BCA\u65AD" });
+    const endpoint = this.plugin.settings.baseUrl ? buildEndpoint(this.plugin.settings.baseUrl, this.plugin.settings.transport) : "\uFF08\u5C1A\u672A\u586B\u5199\u63A5\u5165\u5730\u5740\uFF09";
+    containerEl.createEl("p", {
+      text: `\u5B9E\u9645\u8BF7\u6C42\u5730\u5740\uFF1A${endpoint}`,
+      cls: "setting-item-description"
+    });
     new import_obsidian3.Setting(containerEl).setName("\u6D4B\u8BD5\u8FDE\u63A5").setDesc(
-      "\u53D1\u9001 0.3 \u79D2\u9759\u97F3\u97F3\u9891\u505A\u4E00\u6B21\u771F\u5B9E\u8BC6\u522B\u8BF7\u6C42\uFF0C\u7528\u6765\u786E\u8BA4\u9274\u6743\u4E0E\u534F\u8BAE\u662F\u5426\u5339\u914D\u3002Token Plan \u662F\u5426\u652F\u6301\u8BED\u97F3\u6A21\u578B\uFF0C\u9760\u8FD9\u4E00\u9879\u5C31\u80FD\u9A8C\u8BC1\u3002"
+      "\u53D1\u9001 1.5 \u79D2\u9759\u97F3\u97F3\u9891\u505A\u4E00\u6B21\u771F\u5B9E\u8BC6\u522B\u8BF7\u6C42\u3002\u7528\u9759\u97F3\u662F\u56E0\u4E3A\u4E0D\u9700\u8981\u9EA6\u514B\u98CE\uFF0C\u4F46\u5B83\u4E5F\u53EF\u80FD\u88AB\u670D\u52A1\u7AEF\u5224\u4E3A\u300C\u6CA1\u6709\u8BED\u97F3\u300D\u2014\u2014\u90A3\u79CD\u5931\u8D25\u4E0D\u4EE3\u8868\u914D\u7F6E\u6709\u95EE\u9898\u3002"
     ).addButton(
       (button) => button.setButtonText("\u5F00\u59CB\u6D4B\u8BD5").onClick(async () => {
         button.setDisabled(true);
         button.setButtonText("\u6D4B\u8BD5\u4E2D\u2026");
-        try {
-          const result = await this.runConnectionTest();
-          new import_obsidian3.Notice(`\u8FDE\u63A5\u6210\u529F\u3002\u8FD4\u56DE\u6587\u672C\uFF1A\u300C${result || "\uFF08\u7A7A\uFF09"}\u300D`, 8e3);
-        } catch (error) {
-          new import_obsidian3.Notice(`\u8FDE\u63A5\u5931\u8D25\uFF1A${messageOf(error)}`, 12e3);
-        } finally {
-          button.setDisabled(false);
-          button.setButtonText("\u5F00\u59CB\u6D4B\u8BD5");
-        }
+        await this.runWithDiagnostics(
+          button,
+          "\u5F00\u59CB\u6D4B\u8BD5",
+          "\u6D4B\u8BD5\u4E2D\u2026",
+          () => this.runConnectionTest()
+        );
       })
     );
     new import_obsidian3.Setting(containerEl).setName("\u5217\u51FA\u53EF\u7528\u6A21\u578B").setDesc(
@@ -875,30 +890,77 @@ var EchoReadSettingTab = class extends import_obsidian3.PluginSettingTab {
       (button) => button.setButtonText("\u83B7\u53D6\u5217\u8868").onClick(async () => {
         button.setDisabled(true);
         button.setButtonText("\u83B7\u53D6\u4E2D\u2026");
-        try {
+        await this.runWithDiagnostics(button, "\u83B7\u53D6\u5217\u8868", "\u83B7\u53D6\u4E2D\u2026", async () => {
           const ids = await this.runModelList();
-          console.log("[Echo Read] \u8BE5\u6E20\u9053\u53EF\u7528\u6A21\u578B\uFF1A", ids);
-          const preview = ids.slice(0, 6).join("\u3001");
-          new import_obsidian3.Notice(
-            `\u5171 ${ids.length} \u4E2A\u6A21\u578B\uFF1A${preview}${ids.length > 6 ? " \u2026" : ""}\uFF08\u5B8C\u6574\u5217\u8868\u89C1\u63A7\u5236\u53F0\uFF09`,
-            15e3
-          );
-        } catch (error) {
-          new import_obsidian3.Notice(`\u83B7\u53D6\u5931\u8D25\uFF1A${messageOf(error)}`, 12e3);
-        } finally {
-          button.setDisabled(false);
-          button.setButtonText("\u83B7\u53D6\u5217\u8868");
+          return `\u5171 ${ids.length} \u4E2A\u6A21\u578B\uFF1A
+${ids.join("\n")}`;
+        });
+      })
+    );
+    this.diagnosticEl = containerEl.createEl("pre", { cls: "echo-read-diagnostic" });
+    this.diagnosticEl.style.whiteSpace = "pre-wrap";
+    this.diagnosticEl.style.userSelect = "text";
+    this.diagnosticEl.style.maxHeight = "320px";
+    this.diagnosticEl.style.overflow = "auto";
+    this.diagnosticEl.style.fontSize = "12px";
+    this.diagnosticEl.style.lineHeight = "1.5";
+    this.diagnosticEl.setText(this.diagnosticLines.join("\n"));
+    new import_obsidian3.Setting(containerEl).setName("\u590D\u5236\u8BCA\u65AD\u4FE1\u606F").setDesc("\u628A\u4E0A\u9762\u7684\u5185\u5BB9\u590D\u5236\u5230\u526A\u8D34\u677F\uFF0C\u4FBF\u4E8E\u6392\u67E5\u3002").addButton(
+      (button) => button.setButtonText("\u590D\u5236").onClick(async () => {
+        try {
+          await navigator.clipboard.writeText(this.diagnosticLines.join("\n"));
+          new import_obsidian3.Notice("\u5DF2\u590D\u5236\u3002");
+        } catch {
+          new import_obsidian3.Notice("\u590D\u5236\u5931\u8D25\uFF0C\u8BF7\u624B\u52A8\u9009\u4E2D\u4E0A\u9762\u7684\u6587\u672C\u3002");
         }
       })
     );
+  }
+  async runWithDiagnostics(button, idleLabel, busyLabel, action) {
+    this.diagnosticLines = [];
+    this.appendDiagnostic(`\u65F6\u95F4\uFF1A${(/* @__PURE__ */ new Date()).toLocaleString()}`);
+    this.appendDiagnostic(`\u534F\u8BAE\uFF1A${this.plugin.settings.transport}`);
+    this.appendDiagnostic(`\u6A21\u578B\uFF1A${this.plugin.settings.asrModel}`);
+    this.appendDiagnostic(
+      `Key\uFF1A${this.plugin.unlockedApiKey ? "\u5DF2\u89E3\u9501" : "\u672A\u89E3\u9501\uFF08\u8BF7\u5148\u70B9\u300C\u4EC5\u89E3\u9501\u300D\uFF09"}`
+    );
+    try {
+      const result = await action();
+      this.appendDiagnostic("\u7ED3\u679C\uFF1A\u6210\u529F");
+      this.appendDiagnostic(result);
+      new import_obsidian3.Notice("\u6210\u529F\uFF0C\u8BE6\u89C1\u4E0B\u65B9\u8BCA\u65AD\u4FE1\u606F\u3002", 8e3);
+    } catch (error) {
+      this.appendDiagnostic("\u7ED3\u679C\uFF1A\u5931\u8D25");
+      this.appendDiagnostic(messageOf(error));
+      new import_obsidian3.Notice("\u5931\u8D25\uFF0C\u8BE6\u89C1\u4E0B\u65B9\u8BCA\u65AD\u4FE1\u606F\u3002", 8e3);
+    } finally {
+      button.setDisabled(false);
+      button.setButtonText(idleLabel);
+    }
+  }
+  appendDiagnostic(line) {
+    this.diagnosticLines.push(line);
+    this.diagnosticEl?.setText(this.diagnosticLines.join("\n"));
   }
   async runConnectionTest() {
     const apiKey = this.plugin.unlockedApiKey;
     if (!apiKey) throw new Error("\u5C1A\u672A\u89E3\u9501 API Key\u3002");
     if (!this.plugin.settings.baseUrl) throw new Error("\u5C1A\u672A\u586B\u5199\u63A5\u5165\u5730\u5740\u3002");
-    const silence = new Float32Array(16e3 * 0.3);
+    const silence = new Float32Array(16e3 * 1.5);
     const wav = encodeWav(silence, 16e3);
     const dataUri = bytesToDataUri(new Uint8Array(wav), "audio/wav");
+    this.appendDiagnostic(`\u8BF7\u6C42\u5730\u5740\uFF1A${buildEndpoint(this.plugin.settings.baseUrl, this.plugin.settings.transport)}`);
+    this.appendDiagnostic(`\u97F3\u9891\uFF1A1.5 \u79D2\u9759\u97F3 WAV\uFF0Cbase64 \u540E ${Math.round(dataUri.length / 1024)} KB`);
+    this.appendDiagnostic(
+      `\u8BF7\u6C42\u4F53\u9884\u89C8\uFF1A
+${previewRequestBody(
+        {
+          transport: this.plugin.settings.transport,
+          model: this.plugin.settings.asrModel
+        },
+        dataUri
+      )}`
+    );
     return transcribeAudio(
       {
         baseUrl: this.plugin.settings.baseUrl,

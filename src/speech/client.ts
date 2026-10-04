@@ -29,6 +29,30 @@ export function buildEndpoint(baseUrl: string, transport: Transport): string {
 }
 
 /**
+ * 生成可展示的请求体预览：结构完全真实，只把音频数据替换成占位符，
+ * 既方便核对字段名，又不会把几百 KB 的 base64 刷满屏幕。
+ * 预览里不含任何凭据（Key 走请求头）。
+ */
+export function previewRequestBody(
+  options: Pick<AsrClientOptions, "transport" | "model">,
+  audioDataUri: string,
+): string {
+  const body =
+    options.transport === "openai-compatible"
+      ? buildOpenAiCompatibleBody({
+          model: options.model,
+          audioDataUri,
+          sampleRate: 16000,
+        })
+      : buildAsrBody({ model: options.model, audioDataUri, sampleRate: 16000 });
+
+  return JSON.stringify(body, null, 2).replaceAll(
+    audioDataUri,
+    `«base64 音频，${audioDataUri.length} 字符»`,
+  );
+}
+
+/**
  * 列出该渠道可用的模型。用于确认某个模型 ID 在本渠道是否真的存在 ——
  * 这比对着文档猜模型名可靠得多。
  */
