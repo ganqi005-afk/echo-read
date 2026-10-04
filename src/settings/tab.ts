@@ -37,6 +37,9 @@ import {
   recentIndexEntries,
   summarizeCache,
 } from "../store/audio-cache";
+import { describeStep, EBBINGHAUS_INTERVALS } from "../review/schedule";
+import { selectDueCards } from "../review/cards";
+import { readCards } from "../review/store";
 import { deleteTestSample, hasTestSample, loadTestSample } from "../store/sample";
 import {
   describeApiKeyKind,
@@ -93,6 +96,7 @@ export class EchoReadSettingTab extends PluginSettingTab {
     this.renderTts();
     this.renderLlm();
     this.renderReading();
+    this.renderReview();
     this.renderCache();
     this.renderDiagnostics();
   }
@@ -554,6 +558,62 @@ export class EchoReadSettingTab extends PluginSettingTab {
   // ---------------- 诊断 ----------------
 
   // ---------------- 缓存 ----------------
+
+  // ---------------- 闪卡复习 ----------------
+
+  private renderReview(): void {
+    const { containerEl } = this;
+    containerEl.createEl("h3", { text: "闪卡复习" });
+    containerEl.createEl("p", {
+      cls: "setting-item-description",
+      text:
+        `间隔按艾宾浩斯遗忘曲线安排：${EBBINGHAUS_INTERVALS.join(" / ")} 天。` +
+        "勾选表示「记得」，推进到下一档；没勾表示「忘了」，下一轮重走整条曲线。",
+    });
+    containerEl.createEl("p", {
+      cls: "setting-item-description",
+      text:
+        "入口有三个：左侧边栏的图层图标 · 命令面板里的「闪卡复习：打开今日队列」· 下面的按钮。" +
+        "卡片在 _lingo/cards.md，队列在 _lingo/review.md。",
+    });
+
+    const stats = new Setting(containerEl).setName("卡片情况").setDesc("统计中…");
+    void this.refreshReviewStats(stats);
+
+    new Setting(containerEl)
+      .setName("打开今日复习")
+      .setDesc("生成今日队列并直接打开。勾选 checkbox 就是复习本身。")
+      .addButton((button) =>
+        button.setButtonText("打开").setCta().onClick(async () => {
+          await this.plugin.openReview();
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName("重新生成队列")
+      .setDesc("只重新生成，不打开文件。适合想先看看内容的情况。")
+      .addButton((button) =>
+        button.setButtonText("生成").onClick(async () => {
+          await this.plugin.buildReviewQueue();
+          this.display();
+        }),
+      );
+  }
+
+  private async refreshReviewStats(setting: { setDesc(value: string): unknown }): Promise<void> {
+    const cards = await readCards(this.app);
+    if (cards.length === 0) {
+      setting.setDesc("还没有卡片。跟读后点「讲解」，模型挑出的词会自动变成卡片。");
+      return;
+    }
+
+    const due = selectDueCards(cards, new Date());
+    const furthest = cards.reduce((max, card) => Math.max(max, card.step), 0);
+    setting.setDesc(
+      `共 ${cards.length} 张，今日到期 ${due.length} 张。` +
+        `最靠前的一张已到${describeStep(furthest)}。`,
+    );
+  }
 
   private renderCache(): void {
     const { containerEl } = this;

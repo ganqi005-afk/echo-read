@@ -1,10 +1,11 @@
-import { Notice, Plugin } from "obsidian";
+import { Notice, Plugin, TFile } from "obsidian";
 import { RecorderModal } from "./recorder-modal";
 import { ReadingController } from "./reader/controller";
 import { loadKeyValues } from "./settings/store";
 import { pruneAudioCache } from "./store/audio-cache";
 import { ensurePracticePromptFile } from "./llm/client";
-import { generateReviewQueue } from "./review/store";
+import { REVIEW_PATH, generateReviewQueue, readCards } from "./review/store";
+import { selectDueCards } from "./review/cards";
 import { EchoReadSettingTab } from "./settings/tab";
 import { DEFAULT_SETTINGS, mergeSettings, type EchoReadSettings } from "./settings/types";
 
@@ -23,14 +24,20 @@ export default class EchoReadPlugin extends Plugin {
     void ensurePracticePromptFile(this.app).catch(() => undefined);
     this.addSettingTab(new EchoReadSettingTab(this.app, this));
     this.addRibbonIcon("mic", "Echo Read：录音工作台", () => this.openRecorder());
+    this.addRibbonIcon("layers", "Echo Read：闪卡复习", () => void this.openReview());
     this.addCommand({
       id: "open-recorder",
       name: "打开录音工作台",
       callback: () => this.openRecorder(),
     });
     this.addCommand({
-      id: "build-review-queue",
-      name: "生成今日复习队列",
+      id: "open-review",
+      name: "闪卡复习：打开今日队列",
+      callback: () => void this.openReview(),
+    });
+    this.addCommand({
+      id: "rebuild-review-queue",
+      name: "闪卡复习：仅重新生成队列",
       callback: () => void this.buildReviewQueue(),
     });
     // 阅读视图交互：点句聚焦 + 底部操作条
@@ -71,6 +78,25 @@ export default class EchoReadPlugin extends Plugin {
     } catch (error) {
       if (notify) new Notice(`生成复习队列失败：${messageOf(error)}`);
     }
+  }
+
+  /**
+   * 闪卡复习的入口：生成今日队列并直接打开它。
+   *
+   * 打开的是普通的 Markdown 文件，不是自建界面 ——
+   * 这是设计文档 9.4 定下的方案 A：零新增 UI，平板与桌面体验一致，
+   * 而且勾选 checkbox 就是复习本身。
+   */
+  async openReview(): Promise<void> {
+    await this.buildReviewQueue(false);
+
+    const file = this.app.vault.getAbstractFileByPath(REVIEW_PATH);
+    if (file instanceof TFile) {
+      await this.app.workspace.getLeaf(false).openFile(file);
+    }
+
+    const due = selectDueCards(await readCards(this.app), new Date()).length;
+    new Notice(due === 0 ? "今天没有到期的卡片。" : `今日复习：${due} 张。`);
   }
 
   async updateSettings(patch: Partial<EchoReadSettings>): Promise<void> {
