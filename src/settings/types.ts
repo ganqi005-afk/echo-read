@@ -59,24 +59,35 @@ export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
   },
 ];
 
-export const DEFAULT_TTS_MODEL_ID = "qwen3-tts-flash";
-
 export interface EchoReadSettings {
   presetId: ProviderPresetId;
   transport: Transport;
   baseUrl: string;
   asrModel: string;
+  ttsMode: TtsMode;
+  ttsBaseUrl: string;
   ttsModel: string;
+  ttsVoice: string;
   voiceURI: string;
   speechRate: number;
 }
+
+/** 系统语音免费且离线；云端合成音色更好但按字符计费。 */
+export type TtsMode = "system" | "cloud";
+
+export const DEFAULT_TTS_BASE_URL = "https://maas.qianwenaiapi.com";
+export const DEFAULT_CLOUD_TTS_MODEL = "qwen-audio-3.0-tts-flash";
+export const DEFAULT_CLOUD_TTS_VOICE = "longanhuan_v3.6";
 
 export const DEFAULT_SETTINGS: EchoReadSettings = {
   presetId: "bailian",
   transport: "dashscope-native",
   baseUrl: DEFAULT_BASE_URL,
   asrModel: DEFAULT_ASR_MODEL,
-  ttsModel: DEFAULT_TTS_MODEL_ID,
+  ttsMode: "system",
+  ttsBaseUrl: DEFAULT_TTS_BASE_URL,
+  ttsModel: DEFAULT_CLOUD_TTS_MODEL,
+  ttsVoice: DEFAULT_CLOUD_TTS_VOICE,
   voiceURI: "",
   speechRate: 1,
 };

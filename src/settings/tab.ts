@@ -11,7 +11,9 @@ import {
 } from "../speech/client";
 import { describeProbeOutcome } from "../speech/key-probe";
 import { loadVoices } from "../speech/tts-system";
+import { guessMimeType, synthesizeSpeech } from "../speech/tts-client";
 import type EchoReadPlugin from "../main";
+import { audioCachePath, readCachedAudio, writeCachedAudio } from "../store/audio-cache";
 import { deleteTestSample, hasTestSample, loadTestSample } from "../store/sample";
 import {
   classifyApiKey,
@@ -24,6 +26,7 @@ import {
   SECRET_KEY_NAME,
   findPreset,
   type ProviderPresetId,
+  type TtsMode,
 } from "./types";
 
 const TRANSPORT_LABELS: Record<Transport, string> = {
@@ -121,14 +124,6 @@ export class EchoReadSettingTab extends PluginSettingTab {
         }),
       );
 
-    new Setting(containerEl)
-      .setName("语音合成模型")
-      .setDesc("默认 qwen3-tts-flash（0.8 元/万字符）。当前版本朗读仍走系统语音，此项为后续云合成预留。")
-      .addText((text) =>
-        text.setValue(this.plugin.settings.ttsModel).onChange(async (value) => {
-          await this.plugin.updateSettings({ ttsModel: value.trim() });
-        }),
-      );
   }
 
   // ---------- 凭据 ----------
@@ -277,6 +272,108 @@ export class EchoReadSettingTab extends PluginSettingTab {
           await this.plugin.updateSettings({ voiceURI: value });
         });
       });
+
+    containerEl.createEl("h3", { text: "云端合成（可选）" });
+    containerEl.createEl("p", {
+      cls: "setting-item-description",
+      text:
+        "用百炼/千问AI平台的语音合成接口生成示范音，音色比系统语音好。" +
+        "合成结果会按「模型 + 音色 + 格式 + 文本」缓存，同一句只付一次费用。",
+    });
+
+    new Setting(containerEl)
+      .setName("朗读方式")
+      .setDesc("系统语音免费且离线；云端合成按字符计费（约 0.8～1 元/万字符）。")
+      .addDropdown((dropdown) => {
+        dropdown.addOption("system", "系统语音（免费）");
+        dropdown.addOption("cloud", "云端合成（按字符计费）");
+        dropdown.setValue(this.plugin.settings.ttsMode).onChange(async (value) => {
+          await this.plugin.updateSettings({ ttsMode: value as TtsMode });
+        });
+      });
+
+    new Setting(containerEl)
+      .setName("合成地址")
+      .setDesc("走 HTTP 接口。注意这与识别通道是独立的，可以填不同域名。")
+      .addText((text) =>
+        text
+          .setPlaceholder("https://maas.qianwenaiapi.com")
+          .setValue(this.plugin.settings.ttsBaseUrl)
+          .onChange(async (value) => {
+            await this.plugin.updateSettings({ ttsBaseUrl: value.trim() });
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("合成模型")
+      .setDesc("默认 qwen-audio-3.0-tts-flash；音色更丰富的可换 qwen-audio-3.0-tts-plus。")
+      .addText((text) =>
+        text.setValue(this.plugin.settings.ttsModel).onChange(async (value) => {
+          await this.plugin.updateSettings({ ttsModel: value.trim() });
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName("音色")
+      .setDesc("合成接口的 voice 是必填项，没有默认值。文档示例：longanhuan_v3.6 / longxiaochun。")
+      .addText((text) =>
+        text.setValue(this.plugin.settings.ttsVoice).onChange(async (value) => {
+          await this.plugin.updateSettings({ ttsVoice: value.trim() });
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName("试听云端音色")
+      .setDesc("合成一句固定的英文并播放，用来确认地址、模型、音色、Key 是否都对。")
+      .addButton((button) =>
+        button.setButtonText("试听").onClick(async () => {
+          button.setDisabled(true);
+          button.setButtonText("合成中…");
+          try {
+            const note = await this.auditionCloudVoice();
+            new Notice(`试听成功（${note}）。`);
+          } catch (error) {
+            new Notice(`试听失败：${messageOf(error)}`, 12000);
+          } finally {
+            button.setDisabled(false);
+            button.setButtonText("试听");
+          }
+        }),
+      );
+  }
+
+  private async auditionCloudVoice(): Promise<string> {
+    const apiKey = this.plugin.unlockedApiKey;
+    if (!apiKey) throw new Error("尚未解锁 API Key。");
+
+    const { ttsBaseUrl, ttsModel, ttsVoice } = this.plugin.settings;
+    if (!ttsBaseUrl) throw new Error("尚未填写合成地址。");
+    if (!ttsVoice) throw new Error("尚未填写音色 —— 合成接口的 voice 是必填项。");
+
+    const format = "mp3";
+    const text = "The plan is ready.";
+    const path = await audioCachePath(text, ttsVoice, ttsModel, format);
+
+    let bytes = await readCachedAudio(this.app, path);
+    const cached = bytes !== undefined;
+    if (!bytes) {
+      const result = await synthesizeSpeech(
+        { baseUrl: ttsBaseUrl, apiKey, model: ttsModel, voice: ttsVoice, format },
+        text,
+      );
+      bytes = result.bytes;
+      await writeCachedAudio(this.app, path, bytes);
+    }
+
+    await this.playAudioBytes(bytes, guessMimeType(format));
+    return cached ? "命中缓存，未产生费用" : `已缓存到 ${path}`;
+  }
+
+  private async playAudioBytes(bytes: ArrayBuffer, mimeType: string): Promise<void> {
+    const url = URL.createObjectURL(new Blob([bytes], { type: mimeType }));
+    const audio = new Audio(url);
+    audio.addEventListener("ended", () => URL.revokeObjectURL(url));
+    await audio.play();
   }
 
   // ---------- 诊断 ----------
