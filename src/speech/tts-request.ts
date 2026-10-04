@@ -1,23 +1,20 @@
 /**
  * 一次合成所需的全部音色参数。
  *
- * 依据官方「非实时语音合成 Qwen-Audio-TTS HTTP API 参考」的参数表：
- * voice 必填；rate / volume / pitch / instruction / language / format / sample_rate 可选。
+ * 注意：不同模型系列能接受的参数**并不相同**。这里的字段是各系列的并集，
+ * 真正发送时由 buildTtsBody 按系列筛选 —— 多传未知字段会让服务端直接拒绝。
  */
 export interface TtsVoice {
   model: string;
   voice: string;
   format: string;
   sampleRate: number;
-  /** 语速，默认 1.0，范围 [0.5, 2.0]。 */
   rate: number;
-  /** 音量，默认 50，范围 [0, 100]。 */
   volume: number;
-  /** 音调，默认 1.0，范围 [0.5, 2.0]。 */
   pitch: number;
-  /** 指令控制：用自然语言描述方言、情感或角色。留空则不传。 */
+  /** 指令控制。Qwen-Audio-TTS 用 instruction，Qwen-TTS 用 instructions —— 由系列决定。 */
   instruction: string;
-  /** 语种提示，如 en / zh / ja。留空则不传。 */
+  /** 语种提示。Qwen-Audio-TTS 用 language，Qwen-TTS 用 language_type。 */
   language: string;
 }
 
@@ -37,13 +34,98 @@ export const DEFAULT_TTS_VOICE: TtsVoice = {
   language: "",
 };
 
+// ---------------- 模型系列 ----------------
+
+export type TtsFamily = "qwen-audio" | "cosyvoice" | "qwen-tts" | "minimax";
+
+export interface TtsFamilySpec {
+  id: TtsFamily;
+  name: string;
+  /** 拼在 Base URL 之后的路径。官方明确要求"端点不可混用"。 */
+  path: string;
+  voiceExample: string;
+  note: string;
+}
+
+const FAMILIES: Record<TtsFamily, TtsFamilySpec> = {
+  "qwen-audio": {
+    id: "qwen-audio",
+    name: "Qwen-Audio-TTS",
+    path: "/api/v1/services/audio/tts/SpeechSynthesizer",
+    voiceExample: "longanhuan_v3.6",
+    note: "支持语速、音量、音调、音频格式、采样率与指令控制。非实时仅北京地域可用。",
+  },
+  cosyvoice: {
+    id: "cosyvoice",
+    name: "CosyVoice",
+    path: "/api/v1/services/audio/tts/SpeechSynthesizer",
+    voiceExample: "longanyang",
+    note: "参数集与 Qwen-Audio-TTS 相同，指令参数名为 instruction。",
+  },
+  "qwen-tts": {
+    id: "qwen-tts",
+    name: "Qwen-TTS",
+    path: "/api/v1/services/aigc/multimodal-generation/generation",
+    voiceExample: "Cherry",
+    note:
+      "端点与 Qwen-Audio-TTS 不同。参数集也不同：用 language_type 与 instructions（复数），" +
+      "不传 format / sample_rate / rate / volume / pitch。",
+  },
+  minimax: {
+    id: "minimax",
+    name: "MiniMax",
+    path: "/api/v1/services/aigc/multimodal-generation/generation",
+    voiceExample: "male-qn-qingse",
+    note:
+      "参数结构完全不同：用 voice_setting 与 audio_setting。音色 ID 形如 male-qn-qingse。" +
+      "支持 emotion 情感控制。",
+  },
+};
+
 /**
- * 构造 HTTP 请求体。
+ * 按模型 ID 判断属于哪个系列。
  *
- * 数值参数一律显式传入，避免服务端默认值变更时行为漂移；
- * 空字符串的 instruction / language 则**不传**，否则等于让服务端处理一个空指令。
+ * 这一步很关键：官方写明"端点不可混用"，用错端点只会拿到一个没有说明的 400。
+ * 与其让用户手填端点，不如由模型名推出来。
+ */
+export function detectTtsFamily(model: string): TtsFamily {
+  const id = model.trim();
+  if (/^minimax\//i.test(id)) return "minimax";
+  if (/^cosyvoice/i.test(id)) return "cosyvoice";
+  if (/^qwen3-tts|^qwen-tts/i.test(id)) return "qwen-tts";
+  return "qwen-audio";
+}
+
+export function ttsFamilySpec(family: TtsFamily): TtsFamilySpec {
+  return FAMILIES[family];
+}
+
+export function ttsEndpointPath(model: string): string {
+  return ttsFamilySpec(detectTtsFamily(model)).path;
+}
+
+// ---------------- 请求体 ----------------
+
+/**
+ * 按系列构造 HTTP 请求体。
+ *
+ * 只发送**该系列文档明确列出**的字段。多传未知字段会被服务端拒绝，
+ * 而各系列的参数名又互不相同（instruction / instructions、language / language_type），
+ * 所以这里必须逐系列分支，不能"一套参数打天下"。
  */
 export function buildTtsBody(voice: TtsVoice, text: string): unknown {
+  switch (detectTtsFamily(voice.model)) {
+    case "minimax":
+      return buildMiniMaxBody(voice, text);
+    case "qwen-tts":
+      return buildQwenTtsBody(voice, text);
+    default:
+      return buildSpeechSynthesizerBody(voice, text);
+  }
+}
+
+/** Qwen-Audio-TTS 与 CosyVoice 共用这个结构。 */
+function buildSpeechSynthesizerBody(voice: TtsVoice, text: string): unknown {
   const input: Record<string, unknown> = {
     text,
     voice: voice.voice,
@@ -60,6 +142,38 @@ export function buildTtsBody(voice: TtsVoice, text: string): unknown {
   return { model: voice.model, input };
 }
 
+/** Qwen-TTS 只接受它自己那一套字段，多传会报错。 */
+function buildQwenTtsBody(voice: TtsVoice, text: string): unknown {
+  const input: Record<string, unknown> = { text, voice: voice.voice };
+  if (voice.language.trim() !== "") input.language_type = voice.language.trim();
+  if (voice.instruction.trim() !== "") input.instructions = voice.instruction.trim();
+  return { model: voice.model, input };
+}
+
+/**
+ * MiniMax 用嵌套的 voice_setting / audio_setting。
+ *
+ * 只映射语义明确的字段：音量与音调在 MiniMax 里是不同的量纲
+ * （vol 0–10、pitch 以半音计），未经实测不做换算，宁可不传。
+ */
+function buildMiniMaxBody(voice: TtsVoice, text: string): unknown {
+  return {
+    model: voice.model,
+    input: {
+      text,
+      voice_setting: {
+        voice_id: voice.voice,
+        speed: voice.rate,
+      },
+      audio_setting: {
+        sample_rate: voice.sampleRate,
+        format: voice.format,
+        channel: 1,
+      },
+    },
+  };
+}
+
 export interface SynthesizedAudio {
   url: string;
   expiresAt?: number;
@@ -67,8 +181,8 @@ export interface SynthesizedAudio {
 
 /**
  * 从非流式响应里取出音频地址。
- * 返回的是**会过期的 OSS 链接**，所以调用方必须立刻下载落盘，
- * 不能把 URL 当缓存存起来（设计文档 12.1）。
+ * 返回的是**会过期的 OSS 链接**（文档：有效期 24 小时），所以调用方必须立刻
+ * 下载落盘，不能把 URL 当缓存存起来（设计文档 12.1）。
  */
 export function extractAudioUrl(payload: unknown): SynthesizedAudio {
   if (!payload || typeof payload !== "object") {

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { TTS_HTTP_PATH, guessMimeType, previewTtsBody } from "../../src/speech/tts-client";
+import {
+  guessMimeType,
+  previewTtsBody,
+  resolveTtsEndpoint,
+} from "../../src/speech/tts-client";
 import { DEFAULT_TTS_VOICE } from "../../src/speech/tts-request";
 
 describe("guessMimeType", () => {
@@ -18,9 +22,38 @@ describe("guessMimeType", () => {
   });
 });
 
-describe("TTS_HTTP_PATH", () => {
-  it("matches the documented endpoint", () => {
-    expect(TTS_HTTP_PATH).toBe("/api/v1/services/audio/tts/SpeechSynthesizer");
+describe("resolveTtsEndpoint", () => {
+  const base = "https://maas.qianwenaiapi.com";
+
+  it("uses the speech-synthesizer path for Qwen-Audio-TTS", () => {
+    expect(resolveTtsEndpoint(base, "qwen-audio-3.0-tts-flash")).toBe(
+      `${base}/api/v1/services/audio/tts/SpeechSynthesizer`,
+    );
+  });
+
+  // 官方明确"端点不可混用"：用错端点只会拿到一个没有说明的 400
+  it("switches to the multimodal path for Qwen-TTS", () => {
+    expect(resolveTtsEndpoint(base, "qwen3-tts-flash")).toBe(
+      `${base}/api/v1/services/aigc/multimodal-generation/generation`,
+    );
+  });
+
+  it("switches to the multimodal path for MiniMax", () => {
+    expect(resolveTtsEndpoint(base, "MiniMax/speech-2.8-hd")).toBe(
+      `${base}/api/v1/services/aigc/multimodal-generation/generation`,
+    );
+  });
+
+  it("keeps the speech-synthesizer path for CosyVoice", () => {
+    expect(resolveTtsEndpoint(base, "cosyvoice-v3-flash")).toBe(
+      `${base}/api/v1/services/audio/tts/SpeechSynthesizer`,
+    );
+  });
+
+  it("tolerates a trailing slash in the base url", () => {
+    expect(resolveTtsEndpoint(`${base}/`, "qwen-audio-3.0-tts-flash")).toBe(
+      `${base}/api/v1/services/audio/tts/SpeechSynthesizer`,
+    );
   });
 });
 

@@ -1,8 +1,20 @@
 import { requestUrl } from "obsidian";
-import { buildTtsBody, extractAudioUrl, type TtsVoice } from "./tts-request";
+import {
+  buildTtsBody,
+  extractAudioUrl,
+  ttsEndpointPath,
+  type TtsVoice,
+} from "./tts-request";
 
 export const DEFAULT_TTS_BASE_URL = "https://maas.qianwenaiapi.com";
-export const TTS_HTTP_PATH = "/api/v1/services/audio/tts/SpeechSynthesizer";
+
+/**
+ * 端点由模型系列决定，**不从设置里手填** ——
+ * 官方明确要求"端点不可混用"，用错只会拿到一个没有说明的 400。
+ */
+export function resolveTtsEndpoint(baseUrl: string, model: string): string {
+  return `${baseUrl.replace(/\/+$/, "")}${ttsEndpointPath(model)}`;
+}
 
 export interface TtsClientOptions {
   baseUrl: string;
@@ -44,7 +56,7 @@ export async function synthesizeSpeech(
   if (!options.apiKey) throw new Error("尚未配置 API Key。");
   if (!options.voice.voice) throw new Error("尚未配置音色 —— 合成接口的 voice 是必填项。");
 
-  const url = `${options.baseUrl.replace(/\/+$/, "")}${TTS_HTTP_PATH}`;
+  const url = resolveTtsEndpoint(options.baseUrl, options.voice.model);
 
   const response = await requestUrl({
     url,

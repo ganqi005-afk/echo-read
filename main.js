@@ -869,7 +869,60 @@ var DEFAULT_TTS_VOICE = {
   instruction: "",
   language: ""
 };
+var FAMILIES = {
+  "qwen-audio": {
+    id: "qwen-audio",
+    name: "Qwen-Audio-TTS",
+    path: "/api/v1/services/audio/tts/SpeechSynthesizer",
+    voiceExample: "longanhuan_v3.6",
+    note: "支持语速、音量、音调、音频格式、采样率与指令控制。非实时仅北京地域可用。"
+  },
+  cosyvoice: {
+    id: "cosyvoice",
+    name: "CosyVoice",
+    path: "/api/v1/services/audio/tts/SpeechSynthesizer",
+    voiceExample: "longanyang",
+    note: "参数集与 Qwen-Audio-TTS 相同，指令参数名为 instruction。"
+  },
+  "qwen-tts": {
+    id: "qwen-tts",
+    name: "Qwen-TTS",
+    path: "/api/v1/services/aigc/multimodal-generation/generation",
+    voiceExample: "Cherry",
+    note: "端点与 Qwen-Audio-TTS 不同。参数集也不同：用 language_type 与 instructions（复数），不传 format / sample_rate / rate / volume / pitch。"
+  },
+  minimax: {
+    id: "minimax",
+    name: "MiniMax",
+    path: "/api/v1/services/aigc/multimodal-generation/generation",
+    voiceExample: "male-qn-qingse",
+    note: "参数结构完全不同：用 voice_setting 与 audio_setting。音色 ID 形如 male-qn-qingse。支持 emotion 情感控制。"
+  }
+};
+function detectTtsFamily(model) {
+  const id = model.trim();
+  if (/^minimax\//i.test(id)) return "minimax";
+  if (/^cosyvoice/i.test(id)) return "cosyvoice";
+  if (/^qwen3-tts|^qwen-tts/i.test(id)) return "qwen-tts";
+  return "qwen-audio";
+}
+function ttsFamilySpec(family) {
+  return FAMILIES[family];
+}
+function ttsEndpointPath(model) {
+  return ttsFamilySpec(detectTtsFamily(model)).path;
+}
 function buildTtsBody(voice, text) {
+  switch (detectTtsFamily(voice.model)) {
+    case "minimax":
+      return buildMiniMaxBody(voice, text);
+    case "qwen-tts":
+      return buildQwenTtsBody(voice, text);
+    default:
+      return buildSpeechSynthesizerBody(voice, text);
+  }
+}
+function buildSpeechSynthesizerBody(voice, text) {
   const input = {
     text,
     voice: voice.voice,
@@ -882,6 +935,29 @@ function buildTtsBody(voice, text) {
   if (voice.instruction.trim() !== "") input.instruction = voice.instruction.trim();
   if (voice.language.trim() !== "") input.language = voice.language.trim();
   return { model: voice.model, input };
+}
+function buildQwenTtsBody(voice, text) {
+  const input = { text, voice: voice.voice };
+  if (voice.language.trim() !== "") input.language_type = voice.language.trim();
+  if (voice.instruction.trim() !== "") input.instructions = voice.instruction.trim();
+  return { model: voice.model, input };
+}
+function buildMiniMaxBody(voice, text) {
+  return {
+    model: voice.model,
+    input: {
+      text,
+      voice_setting: {
+        voice_id: voice.voice,
+        speed: voice.rate
+      },
+      audio_setting: {
+        sample_rate: voice.sampleRate,
+        format: voice.format,
+        channel: 1
+      }
+    }
+  };
 }
 function extractAudioUrl(payload) {
   if (!payload || typeof payload !== "object") {
@@ -1036,7 +1112,9 @@ function toTtsVoice(settings) {
 
 // src/speech/tts-client.ts
 var import_obsidian3 = require("obsidian");
-var TTS_HTTP_PATH = "/api/v1/services/audio/tts/SpeechSynthesizer";
+function resolveTtsEndpoint(baseUrl, model) {
+  return `${baseUrl.replace(/\/+$/, "")}${ttsEndpointPath(model)}`;
+}
 function guessMimeType(format) {
   switch (format.toLowerCase()) {
     case "mp3":
@@ -1054,7 +1132,7 @@ function guessMimeType(format) {
 async function synthesizeSpeech(options, text) {
   if (!options.apiKey) throw new Error("尚未配置 API Key。");
   if (!options.voice.voice) throw new Error("尚未配置音色 —— 合成接口的 voice 是必填项。");
-  const url = `${options.baseUrl.replace(/\/+$/, "")}${TTS_HTTP_PATH}`;
+  const url = resolveTtsEndpoint(options.baseUrl, options.voice.model);
   const response = await (0, import_obsidian3.requestUrl)({
     url,
     method: "POST",
@@ -2114,8 +2192,10 @@ var EchoReadSettingTab = class extends import_obsidian5.PluginSettingTab {
     new import_obsidian5.Setting(containerEl).setName("合成模型").addText(
       (text) => text.setValue(this.plugin.settings.ttsModel).onChange(async (value) => {
         await this.plugin.updateSettings({ ttsModel: value.trim() });
+        this.display();
       })
     );
+    this.renderTtsFamilyNote(containerEl);
     new import_obsidian5.Setting(containerEl).setName("音色").setDesc("必填，接口没有默认值。文档示例：longanhuan_v3.6 / longxiaochun。").addText(
       (text) => text.setValue(this.plugin.settings.ttsVoice).onChange(async (value) => {
         await this.plugin.updateSettings({ ttsVoice: value.trim() });
@@ -2185,6 +2265,28 @@ var EchoReadSettingTab = class extends import_obsidian5.PluginSettingTab {
         );
       })
     );
+  }
+  /**
+   * 显示由模型名推断出的系列与实际请求地址。
+   *
+   * 这一条是必须的：官方明确"端点不可混用"，而端点是由模型系列决定的，
+   * 把它显示出来，用户换模型时才能立刻看出端点跟着变了。
+   */
+  renderTtsFamilyNote(containerEl) {
+    const { ttsModel, ttsBaseUrl } = this.plugin.settings;
+    const family = ttsFamilySpec(detectTtsFamily(ttsModel));
+    containerEl.createEl("p", {
+      cls: "setting-item-description",
+      text: `识别为「${family.name}」系列 —— ${family.note}`
+    });
+    containerEl.createEl("p", {
+      cls: "setting-item-description",
+      text: ttsBaseUrl ? `实际请求地址：${resolveTtsEndpoint(ttsBaseUrl, ttsModel)}` : "尚未填写接入地址。"
+    });
+    containerEl.createEl("p", {
+      cls: "setting-item-description",
+      text: `该系列的音色示例：${family.voiceExample}`
+    });
   }
   // ---------------- 文本能力 ----------------
   renderLlm() {
@@ -2414,7 +2516,7 @@ ${ids.join("\n")}`;
   }
   async runWithDiagnostics(button, idleLabel, busyLabel, context, action) {
     this.diagnosticLines = [];
-    this.appendDiagnostic(`构建时间：${"2026-10-04T07:21:19.318Z"}`);
+    this.appendDiagnostic(`构建时间：${"2026-10-04T07:31:38.651Z"}`);
     this.appendDiagnostic(`时间：${(/* @__PURE__ */ new Date()).toLocaleString()}`);
     for (const line of context) this.appendDiagnostic(line);
     try {
@@ -2504,7 +2606,8 @@ ${previewRequestBody(
     const text = "The plan is ready.";
     const voice = toTtsVoice(this.plugin.settings);
     const signature = voiceSignature(voice);
-    this.appendDiagnostic(`合成地址：${ttsBaseUrl}/api/v1/services/audio/tts/SpeechSynthesizer`);
+    this.appendDiagnostic(`合成地址：${resolveTtsEndpoint(ttsBaseUrl, voice.model)}`);
+    this.appendDiagnostic(`模型系列：${ttsFamilySpec(detectTtsFamily(voice.model)).name}`);
     this.appendDiagnostic(`请求体预览：
 ${previewTtsBody(voice, text)}`);
     const path = await audioCachePath(signature, text, voice.format);

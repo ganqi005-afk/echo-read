@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_TTS_VOICE,
   buildTtsBody,
+  detectTtsFamily,
   extractAudioUrl,
   voiceSignature,
   type TtsVoice,
@@ -89,6 +90,68 @@ describe("voiceSignature", () => {
 
   it("ignores a whitespace-only instruction so it cannot fork the cache", () => {
     expect(voiceSignature(voice({ instruction: "   " }))).toBe(voiceSignature(voice()));
+  });
+});
+
+describe("detectTtsFamily", () => {
+  it("recognises each documented family", () => {
+    expect(detectTtsFamily("qwen-audio-3.0-tts-flash")).toBe("qwen-audio");
+    expect(detectTtsFamily("cosyvoice-v3-flash")).toBe("cosyvoice");
+    expect(detectTtsFamily("qwen3-tts-flash")).toBe("qwen-tts");
+    expect(detectTtsFamily("MiniMax/speech-2.8-hd")).toBe("minimax");
+  });
+
+  it("defaults an unknown model to the Qwen-Audio-TTS family", () => {
+    expect(detectTtsFamily("something-else")).toBe("qwen-audio");
+  });
+});
+
+describe("buildTtsBody across families", () => {
+  it("uses instruction (singular) for Qwen-Audio-TTS", () => {
+    const body = buildTtsBody(voice({ instruction: "慢一点" }), "hi") as Body;
+    expect(body.input.instruction).toBe("慢一点");
+    expect(body.input.instructions).toBeUndefined();
+  });
+
+  it("uses instructions (plural) and language_type for Qwen-TTS", () => {
+    const body = buildTtsBody(
+      voice({
+        model: "qwen3-tts-flash",
+        voice: "Cherry",
+        instruction: "慢一点",
+        language: "English",
+      }),
+      "hi",
+    ) as Body;
+    expect(body.input.instructions).toBe("慢一点");
+    expect(body.input.language_type).toBe("English");
+  });
+
+  // 多传未知字段会被服务端拒绝，所以 Qwen-TTS 不能带上 SpeechSynthesizer 那一套参数
+  it("does not leak speech-synthesizer fields into the Qwen-TTS body", () => {
+    const body = buildTtsBody(voice({ model: "qwen3-tts-flash", voice: "Cherry" }), "hi") as Body;
+    expect(body.input.sample_rate).toBeUndefined();
+    expect(body.input.rate).toBeUndefined();
+    expect(body.input.volume).toBeUndefined();
+    expect(body.input.pitch).toBeUndefined();
+    expect(body.input.format).toBeUndefined();
+  });
+
+  it("uses nested voice_setting and audio_setting for MiniMax", () => {
+    const body = buildTtsBody(
+      voice({ model: "MiniMax/speech-2.8-hd", voice: "male-qn-qingse", rate: 0.9 }),
+      "hi",
+    ) as unknown as {
+      input: {
+        voice_setting: Record<string, unknown>;
+        audio_setting: Record<string, unknown>;
+      };
+    };
+
+    expect(body.input.voice_setting.voice_id).toBe("male-qn-qingse");
+    expect(body.input.voice_setting.speed).toBe(0.9);
+    expect(body.input.audio_setting.format).toBe("mp3");
+    expect(body.input.audio_setting.channel).toBe(1);
   });
 });
 

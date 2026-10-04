@@ -12,8 +12,17 @@ import {
   type Transport,
 } from "../speech/client";
 import { describeProbeOutcome } from "../speech/key-probe";
-import { guessMimeType, previewTtsBody, synthesizeSpeech } from "../speech/tts-client";
-import { voiceSignature } from "../speech/tts-request";
+import {
+  guessMimeType,
+  previewTtsBody,
+  resolveTtsEndpoint,
+  synthesizeSpeech,
+} from "../speech/tts-client";
+import {
+  detectTtsFamily,
+  ttsFamilySpec,
+  voiceSignature,
+} from "../speech/tts-request";
 import { loadVoices } from "../speech/tts-system";
 import {
   audioCachePath,
@@ -264,8 +273,11 @@ export class EchoReadSettingTab extends PluginSettingTab {
       .addText((text) =>
         text.setValue(this.plugin.settings.ttsModel).onChange(async (value) => {
           await this.plugin.updateSettings({ ttsModel: value.trim() });
+          this.display();
         }),
       );
+
+    this.renderTtsFamilyNote(containerEl);
 
     new Setting(containerEl)
       .setName("音色")
@@ -390,6 +402,32 @@ export class EchoReadSettingTab extends PluginSettingTab {
           );
         }),
       );
+  }
+
+  /**
+   * 显示由模型名推断出的系列与实际请求地址。
+   *
+   * 这一条是必须的：官方明确"端点不可混用"，而端点是由模型系列决定的，
+   * 把它显示出来，用户换模型时才能立刻看出端点跟着变了。
+   */
+  private renderTtsFamilyNote(containerEl: HTMLElement): void {
+    const { ttsModel, ttsBaseUrl } = this.plugin.settings;
+    const family = ttsFamilySpec(detectTtsFamily(ttsModel));
+
+    containerEl.createEl("p", {
+      cls: "setting-item-description",
+      text: `识别为「${family.name}」系列 —— ${family.note}`,
+    });
+    containerEl.createEl("p", {
+      cls: "setting-item-description",
+      text: ttsBaseUrl
+        ? `实际请求地址：${resolveTtsEndpoint(ttsBaseUrl, ttsModel)}`
+        : "尚未填写接入地址。",
+    });
+    containerEl.createEl("p", {
+      cls: "setting-item-description",
+      text: `该系列的音色示例：${family.voiceExample}`,
+    });
   }
 
   // ---------------- 文本能力 ----------------
@@ -833,7 +871,8 @@ export class EchoReadSettingTab extends PluginSettingTab {
     const voice = toTtsVoice(this.plugin.settings);
     const signature = voiceSignature(voice);
 
-    this.appendDiagnostic(`合成地址：${ttsBaseUrl}/api/v1/services/audio/tts/SpeechSynthesizer`);
+    this.appendDiagnostic(`合成地址：${resolveTtsEndpoint(ttsBaseUrl, voice.model)}`);
+    this.appendDiagnostic(`模型系列：${ttsFamilySpec(detectTtsFamily(voice.model)).name}`);
     this.appendDiagnostic(`请求体预览：\n${previewTtsBody(voice, text)}`);
 
     const path = await audioCachePath(signature, text, voice.format);
