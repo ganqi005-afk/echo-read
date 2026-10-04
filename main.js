@@ -1334,6 +1334,21 @@ var EchoReadSettingTab = class extends import_obsidian5.PluginSettingTab {
         await this.plugin.updateSettings({ asrModel: value.trim() });
       })
     );
+    new import_obsidian5.Setting(containerEl).setName("测试识别").setDesc(
+      "用已保存的测试音频（没有则用 1.5 秒静音）发一次真实识别请求。静音可能被判为「没有语音」，建议先在录音工作台录一句并「存为测试音频」。"
+    ).addButton(
+      (button) => button.setButtonText("开始测试").onClick(async () => {
+        button.setDisabled(true);
+        button.setButtonText("测试中…");
+        await this.runWithDiagnostics(
+          button,
+          "开始测试",
+          "测试中…",
+          this.asrContext(),
+          () => this.runConnectionTest()
+        );
+      })
+    );
   }
   // ---------------- 语音合成 ----------------
   renderTts() {
@@ -1446,19 +1461,6 @@ var EchoReadSettingTab = class extends import_obsidian5.PluginSettingTab {
   renderDiagnostics() {
     const { containerEl } = this;
     containerEl.createEl("h3", { text: "诊断" });
-    new import_obsidian5.Setting(containerEl).setName("测试识别连接").setDesc("发送一段音频做真实识别请求。建议先在录音工作台录一句并存为测试音频。").addButton(
-      (button) => button.setButtonText("开始测试").onClick(async () => {
-        button.setDisabled(true);
-        button.setButtonText("测试中…");
-        await this.runWithDiagnostics(
-          button,
-          "开始测试",
-          "测试中…",
-          this.asrContext(),
-          () => this.runConnectionTest()
-        );
-      })
-    );
     const sampleSetting = new import_obsidian5.Setting(containerEl).setName("测试音频").setDesc("检查中…");
     void this.refreshSampleDescription(sampleSetting);
     sampleSetting.addButton(
@@ -1554,7 +1556,7 @@ ${ids.join("\n")}`;
   }
   async runWithDiagnostics(button, idleLabel, busyLabel, context, action) {
     this.diagnosticLines = [];
-    this.appendDiagnostic(`构建时间：${"2026-10-04T05:52:46.751Z"}`);
+    this.appendDiagnostic(`构建时间：${"2026-10-04T06:11:55.852Z"}`);
     this.appendDiagnostic(`时间：${(/* @__PURE__ */ new Date()).toLocaleString()}`);
     for (const line of context) this.appendDiagnostic(line);
     try {

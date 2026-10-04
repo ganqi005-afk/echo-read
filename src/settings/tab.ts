@@ -215,6 +215,22 @@ export class EchoReadSettingTab extends PluginSettingTab {
           await this.plugin.updateSettings({ asrModel: value.trim() });
         }),
       );
+
+    new Setting(containerEl)
+      .setName("测试识别")
+      .setDesc(
+        "用已保存的测试音频（没有则用 1.5 秒静音）发一次真实识别请求。" +
+          "静音可能被判为「没有语音」，建议先在录音工作台录一句并「存为测试音频」。",
+      )
+      .addButton((button) =>
+        button.setButtonText("开始测试").onClick(async () => {
+          button.setDisabled(true);
+          button.setButtonText("测试中…");
+          await this.runWithDiagnostics(button, "开始测试", "测试中…", this.asrContext(), () =>
+            this.runConnectionTest(),
+          );
+        }),
+      );
   }
 
   // ---------------- 语音合成 ----------------
@@ -377,19 +393,6 @@ export class EchoReadSettingTab extends PluginSettingTab {
   private renderDiagnostics(): void {
     const { containerEl } = this;
     containerEl.createEl("h3", { text: "诊断" });
-
-    new Setting(containerEl)
-      .setName("测试识别连接")
-      .setDesc("发送一段音频做真实识别请求。建议先在录音工作台录一句并存为测试音频。")
-      .addButton((button) =>
-        button.setButtonText("开始测试").onClick(async () => {
-          button.setDisabled(true);
-          button.setButtonText("测试中…");
-          await this.runWithDiagnostics(button, "开始测试", "测试中…", this.asrContext(), () =>
-            this.runConnectionTest(),
-          );
-        }),
-      );
 
     const sampleSetting = new Setting(containerEl).setName("测试音频").setDesc("检查中…");
     void this.refreshSampleDescription(sampleSetting);
