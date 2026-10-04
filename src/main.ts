@@ -1,5 +1,6 @@
 import { Plugin } from "obsidian";
 import { RecorderModal } from "./recorder-modal";
+import { ReadingController } from "./reader/controller";
 import { EchoReadSettingTab } from "./settings/tab";
 import { DEFAULT_SETTINGS, mergeSettings, type EchoReadSettings } from "./settings/types";
 
@@ -20,6 +21,8 @@ export default class EchoReadPlugin extends Plugin {
       name: "打开录音工作台",
       callback: () => this.openRecorder(),
     });
+    // 阅读视图交互：点句聚焦 + 底部操作条
+    new ReadingController(this.app, this).register();
     console.log("Echo Read loaded");
   }
 

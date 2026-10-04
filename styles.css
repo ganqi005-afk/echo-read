@@ -1,0 +1,40 @@
+/*
+ * 只定义 class，不引入自己的视觉语言：
+ * 颜色、圆角、阴影、层级全部使用 Obsidian 的 CSS 变量，
+ * 这样跟随主题自动变化（设计文档 4.5 / 4.6）。
+ */
+
+.echo-read-current {
+  background-color: var(--text-selection);
+  border-radius: var(--radius-s);
+}
+
+.echo-read-bar {
+  position: fixed;
+  left: 50%;
+  /* 避开 iPad 的安全区，否则会被 Home Indicator 盖住（设计文档 4.8） */
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 16px);
+  transform: translateX(-50%);
+  display: none;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  z-index: var(--layer-popover);
+  background-color: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  box-shadow: var(--shadow-s);
+  /* 窄窗口（iPad 分屏）下不溢出 */
+  max-width: calc(100vw - 32px);
+  flex-wrap: wrap;
+}
+
+.echo-read-bar button {
+  min-height: 44px; /* 触控目标下限（Apple HIG） */
+  cursor: pointer;
+}
+
+.echo-read-bar-status {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}

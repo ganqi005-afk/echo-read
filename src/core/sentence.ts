@@ -10,57 +10,85 @@ const ACRONYMS = new Set(["e.g", "i.e", "u.s", "u.k", "a.m", "p.m"]);
 const CLOSERS = new Set(['"', "'", "\u201d", "\u2019", ")", "]", "\u00bb"]);
 const ENDERS = new Set([".", "!", "?", "\u2026"]);
 
-export function splitSentences(text: string): string[] {
-  const s = text.replace(/\s+/g, " ").trim();
-  if (!s) return [];
+export interface SentenceRange {
+  start: number;
+  end: number;
+  text: string;
+}
 
-  const out: string[] = [];
+/**
+ * 在**原始文本**上分句，并返回偏移量。
+ *
+ * 为什么需要偏移：阅读视图的装饰必须知道每个句子落在原文的哪个区间，
+ * 才能精确切分文本节点。只返回句子字符串是不够的。
+ */
+export function splitSentenceRanges(text: string): SentenceRange[] {
+  const out: SentenceRange[] = [];
   let start = 0;
   let i = 0;
 
-  while (i < s.length) {
-    if (!ENDERS.has(s[i])) {
+  while (i < text.length) {
+    if (!ENDERS.has(text[i])) {
       i++;
       continue;
     }
 
     let j = i;
-    while (j < s.length && ENDERS.has(s[j])) j++;
+    while (j < text.length && ENDERS.has(text[j])) j++;
 
     let k = j;
-    while (k < s.length && CLOSERS.has(s[k])) k++;
+    while (k < text.length && CLOSERS.has(text[k])) k++;
 
-    const next = s[k];
-    if (next !== undefined && next !== " ") {
+    const next = text[k];
+    if (next !== undefined && !isWhitespace(next)) {
       i = k;
       continue;
     }
 
-    if (s[i] === ".") {
-      const token = tokenBefore(s, i);
+    if (text[i] === ".") {
+      const token = tokenBefore(text, i);
       if (TITLES.has(token)) {
         i = j;
         continue;
       }
-      if (ACRONYMS.has(token) && !nextWordStartsUppercase(s, k)) {
+      if (ACRONYMS.has(token) && !nextWordStartsUppercase(text, k)) {
         i = j;
         continue;
       }
-      if (isDecimal(s, i)) {
+      if (isDecimal(text, i)) {
         i = j;
         continue;
       }
     }
 
-    const piece = s.slice(start, k).trim();
-    if (piece) out.push(piece);
+    pushRange(out, text, start, k);
     start = k;
     i = k;
   }
 
-  const tail = s.slice(start).trim();
-  if (tail) out.push(tail);
+  pushRange(out, text, start, text.length);
   return out;
+}
+
+/**
+ * 保留原签名，复用范围版本 —— 两份扫描逻辑会随时间漂移，
+ * 那是最难发现的一类 bug。
+ */
+export function splitSentences(text: string): string[] {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  return splitSentenceRanges(normalized).map((range) => range.text);
+}
+
+function pushRange(out: SentenceRange[], text: string, from: number, to: number): void {
+  let start = from;
+  let end = to;
+  while (start < end && isWhitespace(text[start])) start++;
+  while (end > start && isWhitespace(text[end - 1])) end--;
+  if (end > start) out.push({ start, end, text: text.slice(start, end) });
+}
+
+function isWhitespace(ch: string): boolean {
+  return ch === " " || ch === "\n" || ch === "\t" || ch === "\r";
 }
 
 function tokenBefore(s: string, dotIndex: number): string {
@@ -71,7 +99,7 @@ function tokenBefore(s: string, dotIndex: number): string {
 
 function nextWordStartsUppercase(s: string, from: number): boolean {
   let p = from;
-  while (p < s.length && s[p] === " ") p++;
+  while (p < s.length && isWhitespace(s[p])) p++;
   if (p >= s.length) return true;
   return /[A-Z]/.test(s[p]);
 }

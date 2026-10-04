@@ -23,7 +23,7 @@ __export(main_exports, {
   default: () => EchoReadPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian6 = require("obsidian");
+var import_obsidian7 = require("obsidian");
 
 // src/recorder-modal.ts
 var import_obsidian2 = require("obsidian");
@@ -773,8 +773,63 @@ function messageOf(error) {
   return error instanceof Error ? error.message : String(error);
 }
 
-// src/settings/tab.ts
-var import_obsidian5 = require("obsidian");
+// src/reader/controller.ts
+var import_obsidian4 = require("obsidian");
+
+// src/speech/tts-system.ts
+function loadVoices(timeoutMs = 2e3) {
+  return new Promise((resolve) => {
+    const immediate = speechSynthesis.getVoices();
+    if (immediate.length > 0) {
+      resolve(immediate);
+      return;
+    }
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      speechSynthesis.removeEventListener("voiceschanged", finish);
+      resolve(speechSynthesis.getVoices());
+    };
+    speechSynthesis.addEventListener("voiceschanged", finish);
+    window.setTimeout(finish, timeoutMs);
+  });
+}
+function speak(text, options = {}) {
+  return new Promise((resolve, reject) => {
+    if (typeof speechSynthesis === "undefined") {
+      reject(new Error("当前环境不支持系统语音。"));
+      return;
+    }
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = "en-US";
+    utterance.rate = options.rate ?? 1;
+    if (options.voiceURI) {
+      const voice = speechSynthesis.getVoices().find((v) => v.voiceURI === options.voiceURI);
+      if (voice) utterance.voice = voice;
+    }
+    utterance.onend = () => resolve();
+    utterance.onerror = () => reject(new Error("系统语音朗读失败。"));
+    speechSynthesis.cancel();
+    speechSynthesis.speak(utterance);
+  });
+}
+function stopSpeaking() {
+  if (typeof speechSynthesis !== "undefined") speechSynthesis.cancel();
+}
+
+// src/audio/playback.ts
+async function playAudioBytes(bytes, mimeType) {
+  const url = URL.createObjectURL(new Blob([bytes], { type: mimeType }));
+  const audio = new Audio(url);
+  audio.addEventListener("ended", () => URL.revokeObjectURL(url));
+  try {
+    await audio.play();
+  } catch (error) {
+    URL.revokeObjectURL(url);
+    throw error;
+  }
+}
 
 // src/speech/tts-client.ts
 var import_obsidian3 = require("obsidian");
@@ -890,26 +945,6 @@ function truncate2(text, limit) {
   return text.length > limit ? `${text.slice(0, limit)}…` : text;
 }
 
-// src/speech/tts-system.ts
-function loadVoices(timeoutMs = 2e3) {
-  return new Promise((resolve) => {
-    const immediate = speechSynthesis.getVoices();
-    if (immediate.length > 0) {
-      resolve(immediate);
-      return;
-    }
-    let settled = false;
-    const finish = () => {
-      if (settled) return;
-      settled = true;
-      speechSynthesis.removeEventListener("voiceschanged", finish);
-      resolve(speechSynthesis.getVoices());
-    };
-    speechSynthesis.addEventListener("voiceschanged", finish);
-    window.setTimeout(finish, timeoutMs);
-  });
-}
-
 // src/store/audio-cache.ts
 var AUDIO_CACHE_DIR = "_lingo/audio";
 function toHex(bytes) {
@@ -940,6 +975,306 @@ async function writeCachedAudio(app, path, bytes) {
   if (!await adapter.exists(AUDIO_CACHE_DIR)) await adapter.mkdir(AUDIO_CACHE_DIR);
   await adapter.writeBinary(path, bytes);
 }
+
+// src/reader/actions.ts
+async function speakSentence(app, plugin, text) {
+  const settings = plugin.settings;
+  if (settings.ttsMode === "system") {
+    await speak(text, { voiceURI: settings.voiceURI, rate: settings.speechRate });
+    return "system";
+  }
+  const format = "mp3";
+  const path = await audioCachePath(text, settings.ttsVoice, settings.ttsModel, format);
+  const cached = await readCachedAudio(app, path);
+  if (cached) {
+    await playAudioBytes(cached, guessMimeType(format));
+    return "cache";
+  }
+  const apiKey = plugin.unlockedKeys[settings.ttsKeyId];
+  if (!settings.ttsKeyId || !apiKey) {
+    throw new Error("云端合成尚未绑定或解锁 Key，请到插件设置里处理。");
+  }
+  if (!settings.ttsVoice) {
+    throw new Error("云端合成缺少音色，请到插件设置里填写。");
+  }
+  const result = await synthesizeSpeech(
+    {
+      baseUrl: settings.ttsBaseUrl,
+      apiKey,
+      model: settings.ttsModel,
+      voice: settings.ttsVoice,
+      format
+    },
+    text
+  );
+  await writeCachedAudio(app, path, result.bytes);
+  await playAudioBytes(result.bytes, result.mimeType);
+  return "cloud";
+}
+
+// src/core/sentence.ts
+var TITLES = /* @__PURE__ */ new Set([
+  "mr",
+  "mrs",
+  "ms",
+  "dr",
+  "prof",
+  "st",
+  "jr",
+  "sr",
+  "vs",
+  "etc",
+  "no",
+  "fig",
+  "eq",
+  "inc",
+  "ltd",
+  "co",
+  "approx"
+]);
+var ACRONYMS = /* @__PURE__ */ new Set(["e.g", "i.e", "u.s", "u.k", "a.m", "p.m"]);
+var CLOSERS = /* @__PURE__ */ new Set(['"', "'", "”", "’", ")", "]", "»"]);
+var ENDERS = /* @__PURE__ */ new Set([".", "!", "?", "…"]);
+function splitSentenceRanges(text) {
+  const out = [];
+  let start = 0;
+  let i = 0;
+  while (i < text.length) {
+    if (!ENDERS.has(text[i])) {
+      i++;
+      continue;
+    }
+    let j = i;
+    while (j < text.length && ENDERS.has(text[j])) j++;
+    let k = j;
+    while (k < text.length && CLOSERS.has(text[k])) k++;
+    const next = text[k];
+    if (next !== void 0 && !isWhitespace(next)) {
+      i = k;
+      continue;
+    }
+    if (text[i] === ".") {
+      const token = tokenBefore(text, i);
+      if (TITLES.has(token)) {
+        i = j;
+        continue;
+      }
+      if (ACRONYMS.has(token) && !nextWordStartsUppercase(text, k)) {
+        i = j;
+        continue;
+      }
+      if (isDecimal(text, i)) {
+        i = j;
+        continue;
+      }
+    }
+    pushRange(out, text, start, k);
+    start = k;
+    i = k;
+  }
+  pushRange(out, text, start, text.length);
+  return out;
+}
+function pushRange(out, text, from, to) {
+  let start = from;
+  let end = to;
+  while (start < end && isWhitespace(text[start])) start++;
+  while (end > start && isWhitespace(text[end - 1])) end--;
+  if (end > start) out.push({ start, end, text: text.slice(start, end) });
+}
+function isWhitespace(ch) {
+  return ch === " " || ch === "\n" || ch === "	" || ch === "\r";
+}
+function tokenBefore(s, dotIndex) {
+  let p = dotIndex - 1;
+  while (p >= 0 && /[A-Za-z.]/.test(s[p])) p--;
+  return s.slice(p + 1, dotIndex).toLowerCase();
+}
+function nextWordStartsUppercase(s, from) {
+  let p = from;
+  while (p < s.length && isWhitespace(s[p])) p++;
+  if (p >= s.length) return true;
+  return /[A-Z]/.test(s[p]);
+}
+function isDecimal(s, dotIndex) {
+  const prev = s[dotIndex - 1];
+  const next = s[dotIndex + 1];
+  return prev !== void 0 && next !== void 0 && /\d/.test(prev) && /\d/.test(next);
+}
+
+// src/reader/decorate.ts
+var SENTENCE_ATTR = "data-echo-read-sentence";
+var PARAGRAPH_ATTR = "data-echo-read-paragraph";
+var CURRENT_CLASS = "echo-read-current";
+var MIN_SENTENCES = 2;
+var MIN_LENGTH = 40;
+function decorateParagraph(paragraph) {
+  if (paragraph.hasAttribute(PARAGRAPH_ATTR)) return false;
+  const nodes = collectTextNodes(paragraph);
+  if (nodes.length === 0) return false;
+  const text = nodes.map((node) => node.nodeValue ?? "").join("");
+  if (text.trim().length < MIN_LENGTH) return false;
+  const ranges = splitSentenceRanges(text);
+  if (ranges.length < MIN_SENTENCES) return false;
+  let wrapped = false;
+  for (const { node, index } of assignOwners(nodes, ranges)) {
+    if (index < 0) continue;
+    wrapTextNode(node, index);
+    wrapped = true;
+  }
+  if (wrapped) paragraph.setAttribute(PARAGRAPH_ATTR, "");
+  return wrapped;
+}
+function collectTextNodes(root) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (node.nodeValue && node.nodeValue.length > 0) nodes.push(node);
+  }
+  return nodes;
+}
+function assignOwners(nodes, ranges) {
+  const owners = [];
+  let offset = 0;
+  for (const node of nodes) {
+    const length = node.nodeValue?.length ?? 0;
+    const nodeEnd = offset + length;
+    let cursor = offset;
+    let current = node;
+    while (cursor < nodeEnd) {
+      const index = ranges.findIndex((range) => cursor >= range.start && cursor < range.end);
+      if (index < 0) {
+        const next = ranges.find((range) => range.start > cursor);
+        const stop = Math.min(next ? next.start : nodeEnd, nodeEnd);
+        if (stop <= cursor) break;
+        current = current.splitText(stop - cursor);
+        cursor = stop;
+        continue;
+      }
+      const boundary = ranges[index].end;
+      if (boundary >= nodeEnd) {
+        owners.push({ node: current, index });
+        break;
+      }
+      const rest = current.splitText(boundary - cursor);
+      owners.push({ node: current, index });
+      current = rest;
+      cursor = boundary;
+    }
+    offset = nodeEnd;
+  }
+  return owners;
+}
+function wrapTextNode(node, index) {
+  const parent = node.parentNode;
+  if (!parent) return;
+  const span = document.createElement("span");
+  span.setAttribute(SENTENCE_ATTR, String(index));
+  parent.insertBefore(span, node);
+  span.appendChild(node);
+}
+
+// src/reader/controller.ts
+var ReadingController = class {
+  constructor(app, plugin) {
+    this.app = app;
+    this.plugin = plugin;
+  }
+  app;
+  plugin;
+  currentText = "";
+  currentSpans = [];
+  bar = null;
+  statusEl = null;
+  register() {
+    this.plugin.registerMarkdownPostProcessor((element) => {
+      element.querySelectorAll("p").forEach((paragraph) => decorateParagraph(paragraph));
+    });
+    this.plugin.registerDomEvent(document, "click", (event) => this.onClick(event));
+    this.plugin.register(() => this.dispose());
+  }
+  onClick(event) {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    if (this.bar && this.bar.contains(target)) return;
+    if (target.closest("a")) return;
+    const span = target.closest(`[${SENTENCE_ATTR}]`);
+    if (!(span instanceof HTMLElement)) {
+      this.clearSelection();
+      return;
+    }
+    const index = Number(span.getAttribute(SENTENCE_ATTR));
+    if (!Number.isFinite(index)) return;
+    this.selectSentence(index, span);
+  }
+  selectSentence(index, span) {
+    this.clearHighlight();
+    const scope = span.closest(`[${PARAGRAPH_ATTR}]`) ?? document;
+    const spans = Array.from(
+      scope.querySelectorAll(`[${SENTENCE_ATTR}="${index}"]`)
+    );
+    for (const element of spans) element.classList.add(CURRENT_CLASS);
+    this.currentSpans = spans;
+    this.currentText = spans.map((element) => element.textContent ?? "").join("");
+    this.showBar();
+  }
+  clearHighlight() {
+    for (const element of this.currentSpans) element.classList.remove(CURRENT_CLASS);
+    this.currentSpans = [];
+  }
+  clearSelection() {
+    this.clearHighlight();
+    this.currentText = "";
+    stopSpeaking();
+    if (this.bar) this.bar.style.display = "none";
+  }
+  showBar() {
+    const bar = this.ensureBar();
+    bar.style.display = "flex";
+    if (this.statusEl) this.statusEl.setText("");
+  }
+  ensureBar() {
+    if (this.bar) return this.bar;
+    const bar = document.body.createDiv({ cls: "echo-read-bar" });
+    bar.createEl("button", { text: "朗读" }).addEventListener("click", () => {
+      void this.speak();
+    });
+    bar.createEl("button", { text: "停止" }).addEventListener("click", () => {
+      stopSpeaking();
+    });
+    bar.createEl("button", { text: "关闭" }).addEventListener("click", () => {
+      this.clearSelection();
+    });
+    this.statusEl = bar.createDiv({ cls: "echo-read-bar-status" });
+    this.bar = bar;
+    return bar;
+  }
+  async speak() {
+    if (!this.currentText.trim()) return;
+    this.setStatus("朗读中…");
+    try {
+      const source = await speakSentence(this.app, this.plugin, this.currentText);
+      this.setStatus(
+        source === "cache" ? "已朗读（命中缓存）" : source === "cloud" ? "已朗读（云端合成）" : "已朗读"
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.setStatus(`失败：${message}`);
+      new import_obsidian4.Notice(`朗读失败：${message}`, 8e3);
+    }
+  }
+  setStatus(text) {
+    this.statusEl?.setText(text);
+  }
+  dispose() {
+    this.bar?.remove();
+    this.bar = null;
+    this.statusEl = null;
+  }
+};
+
+// src/settings/tab.ts
+var import_obsidian6 = require("obsidian");
 
 // src/settings/key-format.ts
 function classifyApiKey(key) {
@@ -975,7 +1310,7 @@ function describeKeyEndpointMismatch(key, baseUrl) {
 }
 
 // src/settings/store.ts
-var import_obsidian4 = require("obsidian");
+var import_obsidian5 = require("obsidian");
 
 // src/store/secrets.ts
 var PRODUCTION_ITERATIONS = 6e5;
@@ -1195,7 +1530,7 @@ var TRANSPORT_LABELS = {
   "dashscope-native": "DashScope 原生",
   "openai-compatible": "OpenAI 兼容"
 };
-var EchoReadSettingTab = class extends import_obsidian5.PluginSettingTab {
+var EchoReadSettingTab = class extends import_obsidian6.PluginSettingTab {
   plugin;
   keys = [];
   passphrase = "";
@@ -1238,15 +1573,15 @@ var EchoReadSettingTab = class extends import_obsidian5.PluginSettingTab {
     }
     for (const key of this.keys) {
       const unlocked = this.plugin.unlockedKeys[key.id] !== void 0;
-      new import_obsidian5.Setting(containerEl).setName(key.label).setDesc(`${describeApiKeyKind(key.kind)}　·　${unlocked ? "已解锁" : "未解锁"}`).addButton(
+      new import_obsidian6.Setting(containerEl).setName(key.label).setDesc(`${describeApiKeyKind(key.kind)}　·　${unlocked ? "已解锁" : "未解锁"}`).addButton(
         (button) => button.setButtonText("删除").setWarning().onClick(async () => {
           await deleteKey(this.app, key.id);
-          new import_obsidian5.Notice(`已删除「${key.label}」。`);
+          new import_obsidian6.Notice(`已删除「${key.label}」。`);
           this.display();
         })
       );
     }
-    new import_obsidian5.Setting(containerEl).setName("新增 Key").setDesc("名称只是给你自己看的标签，例如「语音」「Token Plan」。").addText(
+    new import_obsidian6.Setting(containerEl).setName("新增 Key").setDesc("名称只是给你自己看的标签，例如「语音」「Token Plan」。").addText(
       (text) => text.setPlaceholder("名称").onChange((value) => {
         this.newKeyLabel = value;
       })
@@ -1258,11 +1593,11 @@ var EchoReadSettingTab = class extends import_obsidian5.PluginSettingTab {
     }).addButton(
       (button) => button.setButtonText("保存").setCta().onClick(async () => {
         if (!this.passphrase) {
-          new import_obsidian5.Notice("请先填写下方的加密口令。");
+          new import_obsidian6.Notice("请先填写下方的加密口令。");
           return;
         }
         if (!this.newKeyLabel.trim() || !this.newKeyValue.trim()) {
-          new import_obsidian5.Notice("名称和 Key 都要填。");
+          new import_obsidian6.Notice("名称和 Key 都要填。");
           return;
         }
         const id = makeKeyId(
@@ -1274,14 +1609,14 @@ var EchoReadSettingTab = class extends import_obsidian5.PluginSettingTab {
           this.plugin.unlockedKeys[id] = this.newKeyValue.trim();
           this.newKeyLabel = "";
           this.newKeyValue = "";
-          new import_obsidian5.Notice("已加密保存并解锁。");
+          new import_obsidian6.Notice("已加密保存并解锁。");
           this.display();
         } catch (error) {
-          new import_obsidian5.Notice(`保存失败：${messageOf2(error)}`);
+          new import_obsidian6.Notice(`保存失败：${messageOf2(error)}`);
         }
       })
     );
-    new import_obsidian5.Setting(containerEl).setName("加密口令").setDesc("同一个口令解锁全部 Key。忘记口令只能重新填写一次各个 Key，不会丢失其他数据。").addText((text) => {
+    new import_obsidian6.Setting(containerEl).setName("加密口令").setDesc("同一个口令解锁全部 Key。忘记口令只能重新填写一次各个 Key，不会丢失其他数据。").addText((text) => {
       text.inputEl.type = "password";
       text.setPlaceholder("本设备口令").onChange((value) => {
         this.passphrase = value;
@@ -1289,15 +1624,15 @@ var EchoReadSettingTab = class extends import_obsidian5.PluginSettingTab {
     }).addButton(
       (button) => button.setButtonText("解锁全部").onClick(async () => {
         if (!this.passphrase) {
-          new import_obsidian5.Notice("请先填写加密口令。");
+          new import_obsidian6.Notice("请先填写加密口令。");
           return;
         }
         try {
           this.plugin.unlockedKeys = await unlockAllKeys(this.app, this.passphrase);
-          new import_obsidian5.Notice(`已解锁 ${Object.keys(this.plugin.unlockedKeys).length} 把 Key。`);
+          new import_obsidian6.Notice(`已解锁 ${Object.keys(this.plugin.unlockedKeys).length} 把 Key。`);
           this.display();
         } catch {
-          new import_obsidian5.Notice("解锁失败：口令不正确。");
+          new import_obsidian6.Notice("解锁失败：口令不正确。");
         }
       })
     );
@@ -1317,24 +1652,24 @@ var EchoReadSettingTab = class extends import_obsidian5.PluginSettingTab {
     this.addKeyBinding(containerEl, "使用的 Key", this.plugin.settings.asrKeyId, async (keyId) => {
       await this.plugin.updateSettings({ asrKeyId: keyId });
     });
-    new import_obsidian5.Setting(containerEl).setName("协议").addDropdown((dropdown) => {
+    new import_obsidian6.Setting(containerEl).setName("协议").addDropdown((dropdown) => {
       dropdown.addOption("dashscope-native", TRANSPORT_LABELS["dashscope-native"]);
       dropdown.addOption("openai-compatible", TRANSPORT_LABELS["openai-compatible"]);
       dropdown.setValue(this.plugin.settings.asrTransport).onChange(async (value) => {
         await this.plugin.updateSettings({ asrTransport: value });
       });
     });
-    new import_obsidian5.Setting(containerEl).setName("接入地址").addText(
+    new import_obsidian6.Setting(containerEl).setName("接入地址").addText(
       (text) => text.setValue(this.plugin.settings.asrBaseUrl).onChange(async (value) => {
         await this.plugin.updateSettings({ asrBaseUrl: value.trim() });
       })
     );
-    new import_obsidian5.Setting(containerEl).setName("识别模型").addText(
+    new import_obsidian6.Setting(containerEl).setName("识别模型").addText(
       (text) => text.setValue(this.plugin.settings.asrModel).onChange(async (value) => {
         await this.plugin.updateSettings({ asrModel: value.trim() });
       })
     );
-    new import_obsidian5.Setting(containerEl).setName("测试识别").setDesc(
+    new import_obsidian6.Setting(containerEl).setName("测试识别").setDesc(
       "用已保存的测试音频（没有则用 1.5 秒静音）发一次真实识别请求。静音可能被判为「没有语音」，建议先在录音工作台录一句并「存为测试音频」。"
     ).addButton(
       (button) => button.setButtonText("开始测试").onClick(async () => {
@@ -1354,7 +1689,7 @@ var EchoReadSettingTab = class extends import_obsidian5.PluginSettingTab {
   renderTts() {
     const { containerEl } = this;
     containerEl.createEl("h3", { text: "语音合成" });
-    new import_obsidian5.Setting(containerEl).setName("朗读方式").setDesc("系统语音免费且离线；云端合成按字符计费（约 0.8～1 元/万字符）。").addDropdown((dropdown) => {
+    new import_obsidian6.Setting(containerEl).setName("朗读方式").setDesc("系统语音免费且离线；云端合成按字符计费（约 0.8～1 元/万字符）。").addDropdown((dropdown) => {
       dropdown.addOption("system", "系统语音（免费）");
       dropdown.addOption("cloud", "云端合成（按字符计费）");
       dropdown.setValue(this.plugin.settings.ttsMode).onChange(async (value) => {
@@ -1371,22 +1706,22 @@ var EchoReadSettingTab = class extends import_obsidian5.PluginSettingTab {
     this.addKeyBinding(containerEl, "使用的 Key", this.plugin.settings.ttsKeyId, async (keyId) => {
       await this.plugin.updateSettings({ ttsKeyId: keyId });
     });
-    new import_obsidian5.Setting(containerEl).setName("接入地址").setDesc("走 HTTP 接口，与识别通道彼此独立。").addText(
+    new import_obsidian6.Setting(containerEl).setName("接入地址").setDesc("走 HTTP 接口，与识别通道彼此独立。").addText(
       (text) => text.setValue(this.plugin.settings.ttsBaseUrl).onChange(async (value) => {
         await this.plugin.updateSettings({ ttsBaseUrl: value.trim() });
       })
     );
-    new import_obsidian5.Setting(containerEl).setName("合成模型").addText(
+    new import_obsidian6.Setting(containerEl).setName("合成模型").addText(
       (text) => text.setValue(this.plugin.settings.ttsModel).onChange(async (value) => {
         await this.plugin.updateSettings({ ttsModel: value.trim() });
       })
     );
-    new import_obsidian5.Setting(containerEl).setName("音色").setDesc("必填，接口没有默认值。文档示例：longanhuan_v3.6 / longxiaochun。").addText(
+    new import_obsidian6.Setting(containerEl).setName("音色").setDesc("必填，接口没有默认值。文档示例：longanhuan_v3.6 / longxiaochun。").addText(
       (text) => text.setValue(this.plugin.settings.ttsVoice).onChange(async (value) => {
         await this.plugin.updateSettings({ ttsVoice: value.trim() });
       })
     );
-    new import_obsidian5.Setting(containerEl).setName("试听云端音色").setDesc("合成一句固定的英文并播放，结果按「模型 + 音色 + 格式 + 文本」缓存。").addButton(
+    new import_obsidian6.Setting(containerEl).setName("试听云端音色").setDesc("合成一句固定的英文并播放，结果按「模型 + 音色 + 格式 + 文本」缓存。").addButton(
       (button) => button.setButtonText("试听").onClick(async () => {
         button.setDisabled(true);
         button.setButtonText("合成中…");
@@ -1424,12 +1759,12 @@ var EchoReadSettingTab = class extends import_obsidian5.PluginSettingTab {
     this.addKeyBinding(containerEl, "使用的 Key", this.plugin.settings.llmKeyId, async (keyId) => {
       await this.plugin.updateSettings({ llmKeyId: keyId });
     });
-    new import_obsidian5.Setting(containerEl).setName("接入地址").addText(
+    new import_obsidian6.Setting(containerEl).setName("接入地址").addText(
       (text) => text.setValue(this.plugin.settings.llmBaseUrl).onChange(async (value) => {
         await this.plugin.updateSettings({ llmBaseUrl: value.trim() });
       })
     );
-    new import_obsidian5.Setting(containerEl).setName("模型").addText(
+    new import_obsidian6.Setting(containerEl).setName("模型").addText(
       (text) => text.setValue(this.plugin.settings.llmModel).onChange(async (value) => {
         await this.plugin.updateSettings({ llmModel: value.trim() });
       })
@@ -1439,12 +1774,12 @@ var EchoReadSettingTab = class extends import_obsidian5.PluginSettingTab {
   renderReading() {
     const { containerEl } = this;
     containerEl.createEl("h3", { text: "系统语音" });
-    new import_obsidian5.Setting(containerEl).setName("语速").addSlider(
+    new import_obsidian6.Setting(containerEl).setName("语速").addSlider(
       (slider) => slider.setLimits(0.5, 1.5, 0.05).setValue(this.plugin.settings.speechRate).setDynamicTooltip().onChange(async (value) => {
         await this.plugin.updateSettings({ speechRate: value });
       })
     );
-    new import_obsidian5.Setting(containerEl).setName("音色").setDesc("留空使用系统默认英语音色。").addDropdown((dropdown) => {
+    new import_obsidian6.Setting(containerEl).setName("音色").setDesc("留空使用系统默认英语音色。").addDropdown((dropdown) => {
       dropdown.addOption("", "系统默认");
       void loadVoices().then((voices) => {
         for (const voice of voices.filter((v) => v.lang.toLowerCase().startsWith("en"))) {
@@ -1461,16 +1796,16 @@ var EchoReadSettingTab = class extends import_obsidian5.PluginSettingTab {
   renderDiagnostics() {
     const { containerEl } = this;
     containerEl.createEl("h3", { text: "诊断" });
-    const sampleSetting = new import_obsidian5.Setting(containerEl).setName("测试音频").setDesc("检查中…");
+    const sampleSetting = new import_obsidian6.Setting(containerEl).setName("测试音频").setDesc("检查中…");
     void this.refreshSampleDescription(sampleSetting);
     sampleSetting.addButton(
       (button) => button.setButtonText("清除").onClick(async () => {
         await deleteTestSample(this.app);
-        new import_obsidian5.Notice("已清除测试音频。");
+        new import_obsidian6.Notice("已清除测试音频。");
         this.display();
       })
     );
-    new import_obsidian5.Setting(containerEl).setName("只测 Key（不发音频）").setDesc("发一个参数不完整的请求：Key 无效会在鉴权阶段被拒，Key 有效则会走到参数校验。").addButton(
+    new import_obsidian6.Setting(containerEl).setName("只测 Key（不发音频）").setDesc("发一个参数不完整的请求：Key 无效会在鉴权阶段被拒，Key 有效则会走到参数校验。").addButton(
       (button) => button.setButtonText("检测 Key").onClick(async () => {
         button.setDisabled(true);
         button.setButtonText("检测中…");
@@ -1480,7 +1815,7 @@ var EchoReadSettingTab = class extends import_obsidian5.PluginSettingTab {
         });
       })
     );
-    new import_obsidian5.Setting(containerEl).setName("列出可用模型").setDesc("调用该渠道的 GET /models，确认模型 ID 是否真的存在。").addButton(
+    new import_obsidian6.Setting(containerEl).setName("列出可用模型").setDesc("调用该渠道的 GET /models，确认模型 ID 是否真的存在。").addButton(
       (button) => button.setButtonText("获取列表").onClick(async () => {
         button.setDisabled(true);
         button.setButtonText("获取中…");
@@ -1498,20 +1833,20 @@ ${ids.join("\n")}`;
     this.diagnosticEl.style.overflow = "auto";
     this.diagnosticEl.style.fontSize = "12px";
     this.diagnosticEl.style.lineHeight = "1.5";
-    new import_obsidian5.Setting(containerEl).setName("复制诊断信息").addButton(
+    new import_obsidian6.Setting(containerEl).setName("复制诊断信息").addButton(
       (button) => button.setButtonText("复制").onClick(async () => {
         try {
           await navigator.clipboard.writeText(this.diagnosticLines.join("\n"));
-          new import_obsidian5.Notice("已复制。");
+          new import_obsidian6.Notice("已复制。");
         } catch {
-          new import_obsidian5.Notice("复制失败，请手动选中上面的文本。");
+          new import_obsidian6.Notice("复制失败，请手动选中上面的文本。");
         }
       })
     );
   }
   // ---------------- 共用小部件 ----------------
   addPresetSetting(containerEl, name, presets, currentId, onChange) {
-    new import_obsidian5.Setting(containerEl).setName(name).setDesc(findPreset(currentId)?.note ?? "").addDropdown((dropdown) => {
+    new import_obsidian6.Setting(containerEl).setName(name).setDesc(findPreset(currentId)?.note ?? "").addDropdown((dropdown) => {
       for (const preset of presets) dropdown.addOption(preset.id, preset.name);
       dropdown.setValue(currentId);
       dropdown.onChange(async (value) => {
@@ -1521,7 +1856,7 @@ ${ids.join("\n")}`;
     });
   }
   addKeyBinding(containerEl, name, currentId, onChange) {
-    new import_obsidian5.Setting(containerEl).setName(name).setDesc(
+    new import_obsidian6.Setting(containerEl).setName(name).setDesc(
       this.keys.length === 0 ? "尚未保存任何 Key，请先在上方「密钥」里添加。" : "选择这个能力使用哪把 Key。"
     ).addDropdown((dropdown) => {
       dropdown.addOption("", "（未绑定）");
@@ -1556,18 +1891,18 @@ ${ids.join("\n")}`;
   }
   async runWithDiagnostics(button, idleLabel, busyLabel, context, action) {
     this.diagnosticLines = [];
-    this.appendDiagnostic(`构建时间：${"2026-10-04T06:11:55.852Z"}`);
+    this.appendDiagnostic(`构建时间：${"2026-10-04T06:15:45.871Z"}`);
     this.appendDiagnostic(`时间：${(/* @__PURE__ */ new Date()).toLocaleString()}`);
     for (const line of context) this.appendDiagnostic(line);
     try {
       const result = await action();
       this.appendDiagnostic("结果：成功");
       this.appendDiagnostic(result);
-      new import_obsidian5.Notice("成功，详见下方诊断信息。", 8e3);
+      new import_obsidian6.Notice("成功，详见下方诊断信息。", 8e3);
     } catch (error) {
       this.appendDiagnostic("结果：失败");
       this.appendDiagnostic(messageOf2(error));
-      new import_obsidian5.Notice("失败，详见下方诊断信息。", 8e3);
+      new import_obsidian6.Notice("失败，详见下方诊断信息。", 8e3);
     } finally {
       button.setDisabled(false);
       button.setButtonText(idleLabel);
@@ -1660,18 +1995,12 @@ ${previewTtsBody(
       bytes = result.bytes;
       await writeCachedAudio(this.app, path, bytes);
     }
-    await this.playAudioBytes(bytes, guessMimeType(format));
+    await playAudioBytes(bytes, guessMimeType(format));
     return [
       `待合成文本：${text}`,
       `音频字节：${bytes.byteLength} B`,
       cached ? "命中缓存，未产生费用" : `已缓存到 ${path}`
     ].join("\n");
-  }
-  async playAudioBytes(bytes, mimeType) {
-    const url = URL.createObjectURL(new Blob([bytes], { type: mimeType }));
-    const audio = new Audio(url);
-    audio.addEventListener("ended", () => URL.revokeObjectURL(url));
-    await audio.play();
   }
 };
 function messageOf2(error) {
@@ -1679,7 +2008,7 @@ function messageOf2(error) {
 }
 
 // src/main.ts
-var EchoReadPlugin = class extends import_obsidian6.Plugin {
+var EchoReadPlugin = class extends import_obsidian7.Plugin {
   settings = DEFAULT_SETTINGS;
   /** 解锁后的 Key 明文，按 Key ID 索引，只存在内存中（设计文档 15.3）。 */
   unlockedKeys = {};
@@ -1694,6 +2023,7 @@ var EchoReadPlugin = class extends import_obsidian6.Plugin {
       name: "打开录音工作台",
       callback: () => this.openRecorder()
     });
+    new ReadingController(this.app, this).register();
     console.log("Echo Read loaded");
   }
   openRecorder() {

@@ -1,6 +1,7 @@
 import { App, Notice, PluginSettingTab, Setting } from "obsidian";
 import { bytesToDataUri } from "../core/base64";
 import { encodeWav } from "../core/wav";
+import { playAudioBytes } from "../audio/playback";
 import type EchoReadPlugin from "../main";
 import {
   buildEndpoint,
@@ -656,7 +657,7 @@ export class EchoReadSettingTab extends PluginSettingTab {
       await writeCachedAudio(this.app, path, bytes);
     }
 
-    await this.playAudioBytes(bytes, guessMimeType(format));
+    await playAudioBytes(bytes, guessMimeType(format));
     return [
       `待合成文本：${text}`,
       `音频字节：${bytes.byteLength} B`,
@@ -664,12 +665,6 @@ export class EchoReadSettingTab extends PluginSettingTab {
     ].join("\n");
   }
 
-  private async playAudioBytes(bytes: ArrayBuffer, mimeType: string): Promise<void> {
-    const url = URL.createObjectURL(new Blob([bytes], { type: mimeType }));
-    const audio = new Audio(url);
-    audio.addEventListener("ended", () => URL.revokeObjectURL(url));
-    await audio.play();
-  }
 }
 
 function messageOf(error: unknown): string {
