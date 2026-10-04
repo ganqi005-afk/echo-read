@@ -3,6 +3,7 @@ import { RecorderModal } from "./recorder-modal";
 import { ReadingController } from "./reader/controller";
 import { loadKeyValues } from "./settings/store";
 import { pruneAudioCache } from "./store/audio-cache";
+import { ensurePracticePromptFile } from "./llm/client";
 import { EchoReadSettingTab } from "./settings/tab";
 import { DEFAULT_SETTINGS, mergeSettings, type EchoReadSettings } from "./settings/types";
 
@@ -17,6 +18,8 @@ export default class EchoReadPlugin extends Plugin {
       (await this.loadData()) as Partial<EchoReadSettings> | null,
     );
     this.apiKeys = await loadKeyValues(this.app);
+    // 把默认提示词写到 vault 里，用户才能直接编辑它
+    void ensurePracticePromptFile(this.app).catch(() => undefined);
     this.addSettingTab(new EchoReadSettingTab(this.app, this));
     this.addRibbonIcon("mic", "Echo Read：录音工作台", () => this.openRecorder());
     this.addCommand({

@@ -888,6 +888,7 @@ function extractJsonObject(raw) {
 }
 
 // src/llm/client.ts
+var PROMPT_DIR = "_lingo/prompts";
 var PRACTICE_PROMPT_PATH = "_lingo/prompts/practice-review.md";
 async function chatCompletion(options, systemPrompt, userContent, maxTokens = 512) {
   if (!options.apiKey) throw new Error("尚未配置文本模型的 API Key。");
@@ -935,6 +936,15 @@ async function loadPracticePrompt(app) {
   } catch {
   }
   return DEFAULT_PRACTICE_PROMPT;
+}
+async function ensurePracticePromptFile(app) {
+  const adapter = app.vault.adapter;
+  try {
+    if (await adapter.exists(PRACTICE_PROMPT_PATH)) return;
+    if (!await adapter.exists(PROMPT_DIR)) await adapter.mkdir(PROMPT_DIR);
+    await adapter.write(PRACTICE_PROMPT_PATH, DEFAULT_PRACTICE_PROMPT);
+  } catch {
+  }
 }
 async function requestPracticeFeedback(app, options, context) {
   const template = await loadPracticePrompt(app);
@@ -2764,7 +2774,7 @@ ${ids.join("\n")}`;
   }
   async runWithDiagnostics(button, idleLabel, busyLabel, context, action) {
     this.diagnosticLines = [];
-    this.appendDiagnostic(`构建时间：${"2026-10-04T10:23:57.453Z"}`);
+    this.appendDiagnostic(`构建时间：${"2026-10-04T10:24:17.643Z"}`);
     this.appendDiagnostic(`时间：${(/* @__PURE__ */ new Date()).toLocaleString()}`);
     for (const line of context) this.appendDiagnostic(line);
     try {
@@ -2893,6 +2903,7 @@ var EchoReadPlugin = class extends import_obsidian7.Plugin {
       await this.loadData()
     );
     this.apiKeys = await loadKeyValues(this.app);
+    void ensurePracticePromptFile(this.app).catch(() => void 0);
     this.addSettingTab(new EchoReadSettingTab(this.app, this));
     this.addRibbonIcon("mic", "Echo Read：录音工作台", () => this.openRecorder());
     this.addCommand({
