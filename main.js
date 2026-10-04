@@ -1213,8 +1213,11 @@ var ReadingController = class {
   statusEl = null;
   resultEl = null;
   shadowButton = null;
+  playbackButton = null;
   continuousButton = null;
   recorder;
+  /** 最近一次录到的音频（16-bit WAV），只放内存，换目标就丢。 */
+  myRecording = null;
   continuous = false;
   repositionQueued = false;
   register() {
@@ -1228,6 +1231,7 @@ var ReadingController = class {
     this.plugin.registerDomEvent(window, "resize", () => this.scheduleReposition());
     this.plugin.register(() => this.dispose());
   }
+  // ---------------- 选择目标 ----------------
   onClick(event) {
     const target = event.target;
     if (!(target instanceof HTMLElement)) return;
@@ -1241,8 +1245,7 @@ var ReadingController = class {
     }
     const index = Number(span.getAttribute(SENTENCE_ATTR));
     if (!Number.isFinite(index)) return;
-    this.stopContinuous();
-    this.cancelRecording();
+    this.prepareForNewTarget();
     this.selectSentence(index, span);
     if (this.plugin.settings.speakOnClick) void this.speak();
   }
@@ -1260,7 +1263,10 @@ var ReadingController = class {
     this.clearHighlight();
     for (const element of group) element.classList.add(CURRENT_CLASS);
     this.currentGroup = group;
-    this.currentText = group.map((element) => element.textContent ?? "").join("");
+    this.currentText = this.textOf(group);
+  }
+  textOf(group) {
+    return group.map((element) => element.textContent ?? "").join("");
   }
   clearHighlight() {
     for (const element of this.currentGroup) element.classList.remove(CURRENT_CLASS);
@@ -1272,10 +1278,62 @@ var ReadingController = class {
     this.clearHighlight();
     this.currentRange = null;
     this.currentText = "";
+    this.forgetRecording();
     stopSpeaking();
     stopPlayback();
     if (this.bar) this.bar.style.display = "none";
   }
+  /** 换一个操作对象时，上一段录音就没有意义了，丢掉以免误播。 */
+  prepareForNewTarget() {
+    this.stopContinuous();
+    this.cancelRecording();
+    this.clearHighlight();
+    this.forgetRecording();
+  }
+  forgetRecording() {
+    this.myRecording = null;
+    if (this.playbackButton) this.playbackButton.style.display = "none";
+  }
+  // ---------------- 拖选文本 ----------------
+  scheduleSelectionCheck() {
+    window.setTimeout(() => this.handleSelection(), 0);
+  }
+  /**
+   * 把任意选中的文本作为朗读 / 跟读对象。
+   *
+   * 这条路径补上了「点整句」覆盖不到的场景：只练一个短语或生词，
+   * 以及标题、列表、表格这类不会被装饰成句子 span 的地方。
+   */
+  handleSelection() {
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0) return;
+    const text = selection.toString().trim();
+    if (!text) return;
+    const range = selection.getRangeAt(0);
+    if (this.isInsideBar(range)) return;
+    if (!this.isInsideNote(range.commonAncestorContainer)) return;
+    this.prepareForNewTarget();
+    this.currentRange = range.cloneRange();
+    this.currentText = text;
+    this.showBar();
+  }
+  hasLiveSelection() {
+    const selection = window.getSelection();
+    return selection !== null && !selection.isCollapsed && selection.toString().trim() !== "";
+  }
+  isInsideBar(range) {
+    if (!this.bar) return false;
+    const element = asElement(range.commonAncestorContainer);
+    return element !== null && this.bar.contains(element);
+  }
+  /** 只处理笔记正文里的选择，避开设置面板、模态框等其它界面。 */
+  isInsideNote(node) {
+    const element = asElement(node);
+    if (!element) return false;
+    if (element.closest(".modal-container, .vertical-tab-content")) return false;
+    return element.closest(".markdown-preview-view, .markdown-source-view, .cm-editor") !== null;
+  }
+  // ---------------- 操作条 ----------------
   showBar() {
     const bar = this.ensureBar();
     bar.style.display = "flex";
@@ -1284,11 +1342,33 @@ var ReadingController = class {
     this.setResult("");
     this.positionPopover();
   }
+  ensureBar() {
+    if (this.bar) return this.bar;
+    const bar = document.body.createDiv({ cls: "echo-read-bar" });
+    bar.createEl("button", { text: "听原句" }).addEventListener("click", () => void this.speak());
+    this.shadowButton = bar.createEl("button", { text: "跟读打分" });
+    this.shadowButton.addEventListener("click", () => void this.toggleShadowing());
+    this.playbackButton = bar.createEl("button", { text: "听我的" });
+    this.playbackButton.style.display = "none";
+    this.playbackButton.addEventListener("click", () => void this.playMyRecording());
+    this.continuousButton = bar.createEl("button", { text: "连续朗读" });
+    this.continuousButton.addEventListener("click", () => void this.toggleContinuous());
+    bar.createEl("button", { text: "停止" }).addEventListener("click", () => {
+      this.stopContinuous();
+      this.cancelRecording();
+      stopSpeaking();
+      stopPlayback();
+      this.setStatus("已停止");
+    });
+    this.statusEl = bar.createDiv({ cls: "echo-read-bar-status" });
+    this.resultEl = bar.createDiv({ cls: "echo-read-bar-result" });
+    this.bar = bar;
+    return bar;
+  }
   /**
-   * 把操作条锚定在选中句的正下方 —— 操作就在你读的那句话旁边，
-   * 不用把视线移到屏幕底部。
+   * 把操作条锚定在目标的边缘 —— 操作就在你读的那段文字旁边。
    *
-   * 被选中的句子可能跨多行，所以要取所有 span 的并集包围盒；
+   * 目标可能跨多行，所以要取所有 span / Range 的并集包围盒；
    * 下方放不下时翻到上方，左右也会夹在视口内避免溢出。
    */
   positionPopover() {
@@ -1323,7 +1403,7 @@ var ReadingController = class {
     bar.style.visibility = "visible";
   }
   /**
-   * 操作对象可能是「整句」（多个 span），也可能是「拖选的一段文字」（一个 Range）。
+   * 目标可能是「整句」（多个 span），也可能是「拖选的一段文字」（一个 Range）。
    * Range 是实时求值的，所以滚动后位置依然准确 —— 缓存矩形做不到这一点。
    */
   targetRects() {
@@ -1333,48 +1413,6 @@ var ReadingController = class {
     if (this.currentRange) return [this.currentRange.getBoundingClientRect()];
     return null;
   }
-  hasLiveSelection() {
-    const selection = window.getSelection();
-    return selection !== null && !selection.isCollapsed && selection.toString().trim() !== "";
-  }
-  scheduleSelectionCheck() {
-    window.setTimeout(() => this.handleSelection(), 0);
-  }
-  /**
-   * 把任意选中的文本作为朗读 / 跟读对象。
-   *
-   * 这条路径补上了「点整句」覆盖不到的场景：只练一个短语或生词，
-   * 以及标题、列表、表格这类不会被装饰成句子 span 的地方。
-   */
-  handleSelection() {
-    const selection = window.getSelection();
-    if (!selection || selection.isCollapsed || selection.rangeCount === 0) return;
-    const text = selection.toString().trim();
-    if (!text) return;
-    const range = selection.getRangeAt(0);
-    if (this.isInsideBar(range)) return;
-    if (!this.isInsideNote(range.commonAncestorContainer)) return;
-    this.stopContinuous();
-    this.cancelRecording();
-    this.clearHighlight();
-    this.currentGroup = [];
-    this.currentRange = range.cloneRange();
-    this.currentText = text;
-    this.showBar();
-  }
-  isInsideBar(range) {
-    if (!this.bar) return false;
-    const node = range.commonAncestorContainer;
-    const element = node instanceof HTMLElement ? node : node.parentElement;
-    return element !== null && this.bar.contains(element);
-  }
-  /** 只处理笔记正文里的选择，避开设置面板、模态框等其它界面。 */
-  isInsideNote(node) {
-    const element = node instanceof HTMLElement ? node : node.parentElement;
-    if (!element) return false;
-    if (element.closest(".modal-container, .vertical-tab-content")) return false;
-    return element.closest(".markdown-preview-view, .markdown-source-view, .cm-editor") !== null;
-  }
   scheduleReposition() {
     if (this.repositionQueued) return;
     this.repositionQueued = true;
@@ -1383,34 +1421,15 @@ var ReadingController = class {
       this.positionPopover();
     });
   }
-  ensureBar() {
-    if (this.bar) return this.bar;
-    const bar = document.body.createDiv({ cls: "echo-read-bar" });
-    this.shadowButton = bar.createEl("button", { text: "跟读打分" });
-    this.shadowButton.addEventListener("click", () => void this.toggleShadowing());
-    this.continuousButton = bar.createEl("button", { text: "连续朗读" });
-    this.continuousButton.addEventListener("click", () => void this.toggleContinuous());
-    bar.createEl("button", { text: "停止" }).addEventListener("click", () => {
-      this.stopContinuous();
-      this.cancelRecording();
-      stopSpeaking();
-      stopPlayback();
-      this.setStatus("已停止");
-    });
-    this.statusEl = bar.createDiv({ cls: "echo-read-bar-status" });
-    this.resultEl = bar.createDiv({ cls: "echo-read-bar-result" });
-    this.bar = bar;
-    return bar;
-  }
-  // ---------------- 朗读 ----------------
+  // ---------------- 听原句（把文本发给模型，拿回语音） ----------------
   async speak() {
     if (!this.currentText.trim()) return;
     this.setResult("");
-    this.setStatus("朗读中…");
+    this.setStatus("合成中…");
     try {
       const source = await speakSentence(this.app, this.plugin, this.currentText);
       this.setStatus(
-        source === "cache" ? "已朗读（命中缓存，未计费）" : source === "cloud" ? "已朗读（云端合成）" : "已朗读"
+        source === "cache" ? "已播放（命中缓存，未计费）" : source === "cloud" ? "已播放（模型返回的语音，已缓存）" : "已播放（系统语音）"
       );
     } catch (error) {
       this.reportFailure("朗读", error);
@@ -1458,9 +1477,6 @@ var ReadingController = class {
   updateContinuousButton() {
     this.continuousButton?.setText(this.continuous ? "停止连读" : "连续朗读");
   }
-  textOf(group) {
-    return group.map((element) => element.textContent ?? "").join("");
-  }
   // ---------------- 跟读打分 ----------------
   /** 第一次点开始录音，第二次点结束并评分。 */
   async toggleShadowing() {
@@ -1470,6 +1486,7 @@ var ReadingController = class {
     }
     if (!this.currentText.trim()) return;
     this.stopContinuous();
+    this.forgetRecording();
     try {
       this.recorder = new Recorder();
       await this.recorder.start();
@@ -1490,12 +1507,16 @@ var ReadingController = class {
     try {
       const recording = await recorder.stop();
       const wav = encodeWav(recording.samples, recording.sampleRate);
-      const dataUri = bytesToDataUri(new Uint8Array(wav), "audio/wav");
+      this.myRecording = wav;
+      if (this.playbackButton) this.playbackButton.style.display = "";
       const settings = this.plugin.settings;
       const apiKey = this.plugin.apiKeys[settings.asrKeyId];
       if (!settings.asrKeyId || !apiKey) {
-        throw new Error("语音识别尚未绑定 Key 或 Key 为空，请到插件设置里处理。");
+        this.setStatus("录音已保留，但识别未配置");
+        this.setResult("语音识别尚未绑定 Key 或 Key 为空，请到插件设置里处理。");
+        return;
       }
+      const dataUri = bytesToDataUri(new Uint8Array(wav), "audio/wav");
       const text = await transcribeAudio(
         {
           baseUrl: settings.asrBaseUrl,
@@ -1513,11 +1534,22 @@ var ReadingController = class {
       this.setResult(
         [
           `识别：${text || "（空）"}`,
-          `漏 ${stats.missing}　多 ${stats.extra}　错 ${stats.wrong}　用时 ${(recording.durationMs / 1e3).toFixed(1)} 秒`
+          `漏 ${stats.missing}　多 ${stats.extra}　错 ${stats.wrong}　用时 ${(recording.durationMs / 1e3).toFixed(1)} 秒`,
+          "点「听我的」可以回放刚才的录音，和「听原句」对比。"
         ].join("\n")
       );
     } catch (error) {
       this.reportFailure("跟读评分", error);
+    }
+  }
+  async playMyRecording() {
+    if (!this.myRecording) return;
+    this.setStatus("播放我的录音…");
+    try {
+      await playAudioBytes(this.myRecording, "audio/wav");
+      this.setStatus("已播放我的录音");
+    } catch (error) {
+      this.reportFailure("回放录音", error);
     }
   }
   cancelRecording() {
@@ -1545,14 +1577,19 @@ var ReadingController = class {
   dispose() {
     this.stopContinuous();
     this.cancelRecording();
+    this.forgetRecording();
     this.bar?.remove();
     this.bar = null;
     this.statusEl = null;
     this.resultEl = null;
     this.shadowButton = null;
+    this.playbackButton = null;
     this.continuousButton = null;
   }
 };
+function asElement(node) {
+  return node instanceof HTMLElement ? node : node.parentElement;
+}
 function collectSentenceGroups(root) {
   const spans = Array.from(root.querySelectorAll(`[${SENTENCE_ATTR}]`));
   const groups = [];
@@ -2110,7 +2147,7 @@ ${ids.join("\n")}`;
   }
   async runWithDiagnostics(button, idleLabel, busyLabel, context, action) {
     this.diagnosticLines = [];
-    this.appendDiagnostic(`构建时间：${"2026-10-04T06:40:22.681Z"}`);
+    this.appendDiagnostic(`构建时间：${"2026-10-04T06:49:20.191Z"}`);
     this.appendDiagnostic(`时间：${(/* @__PURE__ */ new Date()).toLocaleString()}`);
     for (const line of context) this.appendDiagnostic(line);
     try {

@@ -1,5 +1,5 @@
 import { App, Notice } from "obsidian";
-import { stopPlayback } from "../audio/playback";
+import { playAudioBytes, stopPlayback } from "../audio/playback";
 import { Recorder } from "../audio/recorder";
 import { bytesToDataUri } from "../core/base64";
 import { diffDictation } from "../core/diff";
@@ -21,8 +21,11 @@ import {
  *
  * 操作逻辑围绕"少一步"设计：
  * - **点一句就直接朗读**，不需要先选中再点按钮（可在设置里关掉）
- * - 操作条只留三个按钮：跟读打分 / 连续朗读 / 停止
+ * - 拖选任意文字也能作为操作对象，覆盖生词、短语、标题、表格等场景
  * - 点空白处收回，不设独立的「关闭」按钮
+ *
+ * 跟读闭环：录音 → 发给识别模型 → 拿回文本 → 与原文比对评分 →
+ * **保留音频以便回放**（听自己的和听原句，是发音练习里最关键的一步对比）。
  *
  * 操作条是全项目唯一自建 DOM（设计文档 4.7），只用原生 button 与 CSS 变量。
  */
@@ -36,9 +39,12 @@ export class ReadingController {
   private statusEl: HTMLElement | null = null;
   private resultEl: HTMLElement | null = null;
   private shadowButton: HTMLButtonElement | null = null;
+  private playbackButton: HTMLButtonElement | null = null;
   private continuousButton: HTMLButtonElement | null = null;
 
   private recorder?: Recorder;
+  /** 最近一次录到的音频（16-bit WAV），只放内存，换目标就丢。 */
+  private myRecording: ArrayBuffer | null = null;
   private continuous = false;
   private repositionQueued = false;
 
@@ -56,17 +62,19 @@ export class ReadingController {
     // 拖选或键盘选择结束后，看是否有文本被选中
     this.plugin.registerDomEvent(document, "mouseup", () => this.scheduleSelectionCheck());
     this.plugin.registerDomEvent(document, "keyup", () => this.scheduleSelectionCheck());
-    // 滚动或改变窗口大小时让操作条跟着句子走（iPad 分屏会改变视口宽度）
+    // 滚动或改变窗口大小时让操作条跟着目标走（iPad 分屏会改变视口宽度）
     this.plugin.registerDomEvent(window, "scroll", () => this.scheduleReposition(), true);
     this.plugin.registerDomEvent(window, "resize", () => this.scheduleReposition());
     this.plugin.register(() => this.dispose());
   }
 
+  // ---------------- 选择目标 ----------------
+
   private onClick(event: MouseEvent): void {
     const target = event.target;
     if (!(target instanceof HTMLElement)) return;
 
-    // 操作条自己的点击不参与选句判定，否则点「朗读」会把操作条先关掉
+    // 操作条自己的点击不参与选句判定，否则点「听原句」会先把操作条关掉
     if (this.bar && this.bar.contains(target)) return;
 
     // 有文本被选中时，选中的内容优先 —— 单击不应该把它覆盖成整句
@@ -84,8 +92,7 @@ export class ReadingController {
     const index = Number(span.getAttribute(SENTENCE_ATTR));
     if (!Number.isFinite(index)) return;
 
-    this.stopContinuous();
-    this.cancelRecording();
+    this.prepareForNewTarget();
     this.selectSentence(index, span);
 
     // 一步到位：选中的同时就读出来
@@ -100,6 +107,7 @@ export class ReadingController {
       scope.querySelectorAll<HTMLElement>(`[${SENTENCE_ATTR}="${index}"]`),
     );
     if (group.length === 0) return;
+
     this.highlightGroup(group);
     this.currentRange = null;
     this.showBar();
@@ -109,7 +117,11 @@ export class ReadingController {
     this.clearHighlight();
     for (const element of group) element.classList.add(CURRENT_CLASS);
     this.currentGroup = group;
-    this.currentText = group.map((element) => element.textContent ?? "").join("");
+    this.currentText = this.textOf(group);
+  }
+
+  private textOf(group: HTMLElement[]): string {
+    return group.map((element) => element.textContent ?? "").join("");
   }
 
   private clearHighlight(): void {
@@ -123,84 +135,26 @@ export class ReadingController {
     this.clearHighlight();
     this.currentRange = null;
     this.currentText = "";
+    this.forgetRecording();
     stopSpeaking();
     stopPlayback();
     if (this.bar) this.bar.style.display = "none";
   }
 
-  private showBar(): void {
-    const bar = this.ensureBar();
-    bar.style.display = "flex";
-    // 先藏起来，避免它闪现在上一个句子的位置
-    bar.style.visibility = "hidden";
-    this.setStatus("");
-    this.setResult("");
-    this.positionPopover();
+  /** 换一个操作对象时，上一段录音就没有意义了，丢掉以免误播。 */
+  private prepareForNewTarget(): void {
+    this.stopContinuous();
+    this.cancelRecording();
+    this.clearHighlight();
+    this.forgetRecording();
   }
 
-  /**
-   * 把操作条锚定在选中句的正下方 —— 操作就在你读的那句话旁边，
-   * 不用把视线移到屏幕底部。
-   *
-   * 被选中的句子可能跨多行，所以要取所有 span 的并集包围盒；
-   * 下方放不下时翻到上方，左右也会夹在视口内避免溢出。
-   */
-  private positionPopover(): void {
-    const bar = this.bar;
-    if (!bar || bar.style.display === "none") return;
-
-    const rects = this.targetRects();
-    if (!rects) {
-      bar.style.display = "none";
-      return;
-    }
-    const top = Math.min(...rects.map((rect) => rect.top));
-    const bottom = Math.max(...rects.map((rect) => rect.bottom));
-    const left = Math.min(...rects.map((rect) => rect.left));
-    const right = Math.max(...rects.map((rect) => rect.right));
-
-    const viewportWidth = window.innerWidth;
-    const viewportHeight = window.innerHeight;
-
-    // 整句滚出了视野就藏起来，免得操作条"钉"在空白处
-    if (bottom < 0 || top > viewportHeight) {
-      bar.style.visibility = "hidden";
-      return;
-    }
-
-    const height = bar.offsetHeight;
-    const width = bar.offsetWidth;
-
-    let y = bottom + 8;
-    if (y + height > viewportHeight - 8) {
-      const above = top - height - 8;
-      y = above >= 8 ? above : Math.max(8, viewportHeight - height - 8);
-    }
-
-    let x = Math.min(left, right - width);
-    x = Math.max(8, Math.min(x, viewportWidth - width - 8));
-
-    bar.style.top = `${Math.round(y)}px`;
-    bar.style.left = `${Math.round(x)}px`;
-    bar.style.visibility = "visible";
+  private forgetRecording(): void {
+    this.myRecording = null;
+    if (this.playbackButton) this.playbackButton.style.display = "none";
   }
 
-  /**
-   * 操作对象可能是「整句」（多个 span），也可能是「拖选的一段文字」（一个 Range）。
-   * Range 是实时求值的，所以滚动后位置依然准确 —— 缓存矩形做不到这一点。
-   */
-  private targetRects(): DOMRect[] | null {
-    if (this.currentGroup.length > 0) {
-      return this.currentGroup.map((element) => element.getBoundingClientRect());
-    }
-    if (this.currentRange) return [this.currentRange.getBoundingClientRect()];
-    return null;
-  }
-
-  private hasLiveSelection(): boolean {
-    const selection = window.getSelection();
-    return selection !== null && !selection.isCollapsed && selection.toString().trim() !== "";
-  }
+  // ---------------- 拖选文本 ----------------
 
   private scheduleSelectionCheck(): void {
     // 等浏览器先把 selection 更新完，再读它
@@ -224,38 +178,41 @@ export class ReadingController {
     if (this.isInsideBar(range)) return;
     if (!this.isInsideNote(range.commonAncestorContainer)) return;
 
-    this.stopContinuous();
-    this.cancelRecording();
-    this.clearHighlight();
-
-    this.currentGroup = [];
+    this.prepareForNewTarget();
     this.currentRange = range.cloneRange();
     this.currentText = text;
     this.showBar();
   }
 
+  private hasLiveSelection(): boolean {
+    const selection = window.getSelection();
+    return selection !== null && !selection.isCollapsed && selection.toString().trim() !== "";
+  }
+
   private isInsideBar(range: Range): boolean {
     if (!this.bar) return false;
-    const node = range.commonAncestorContainer;
-    const element = node instanceof HTMLElement ? node : node.parentElement;
+    const element = asElement(range.commonAncestorContainer);
     return element !== null && this.bar.contains(element);
   }
 
   /** 只处理笔记正文里的选择，避开设置面板、模态框等其它界面。 */
   private isInsideNote(node: Node): boolean {
-    const element = node instanceof HTMLElement ? node : node.parentElement;
+    const element = asElement(node);
     if (!element) return false;
     if (element.closest(".modal-container, .vertical-tab-content")) return false;
     return element.closest(".markdown-preview-view, .markdown-source-view, .cm-editor") !== null;
   }
 
-  private scheduleReposition(): void {
-    if (this.repositionQueued) return;
-    this.repositionQueued = true;
-    window.requestAnimationFrame(() => {
-      this.repositionQueued = false;
-      this.positionPopover();
-    });
+  // ---------------- 操作条 ----------------
+
+  private showBar(): void {
+    const bar = this.ensureBar();
+    bar.style.display = "flex";
+    // 先藏起来，避免它闪现在上一个目标的位置
+    bar.style.visibility = "hidden";
+    this.setStatus("");
+    this.setResult("");
+    this.positionPopover();
   }
 
   private ensureBar(): HTMLElement {
@@ -263,8 +220,15 @@ export class ReadingController {
 
     const bar = document.body.createDiv({ cls: "echo-read-bar" });
 
+    bar.createEl("button", { text: "听原句" }).addEventListener("click", () => void this.speak());
+
     this.shadowButton = bar.createEl("button", { text: "跟读打分" });
     this.shadowButton.addEventListener("click", () => void this.toggleShadowing());
+
+    // 只在录过音之后出现 —— 听自己的和听原句，是发音练习里最关键的对比
+    this.playbackButton = bar.createEl("button", { text: "听我的" });
+    this.playbackButton.style.display = "none";
+    this.playbackButton.addEventListener("click", () => void this.playMyRecording());
 
     this.continuousButton = bar.createEl("button", { text: "连续朗读" });
     this.continuousButton.addEventListener("click", () => void this.toggleContinuous());
@@ -284,20 +248,88 @@ export class ReadingController {
     return bar;
   }
 
-  // ---------------- 朗读 ----------------
+  /**
+   * 把操作条锚定在目标的边缘 —— 操作就在你读的那段文字旁边。
+   *
+   * 目标可能跨多行，所以要取所有 span / Range 的并集包围盒；
+   * 下方放不下时翻到上方，左右也会夹在视口内避免溢出。
+   */
+  private positionPopover(): void {
+    const bar = this.bar;
+    if (!bar || bar.style.display === "none") return;
+
+    const rects = this.targetRects();
+    if (!rects) {
+      bar.style.display = "none";
+      return;
+    }
+
+    const top = Math.min(...rects.map((rect) => rect.top));
+    const bottom = Math.max(...rects.map((rect) => rect.bottom));
+    const left = Math.min(...rects.map((rect) => rect.left));
+    const right = Math.max(...rects.map((rect) => rect.right));
+
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+
+    // 目标滚出了视野就藏起来，免得操作条"钉"在空白处
+    if (bottom < 0 || top > viewportHeight) {
+      bar.style.visibility = "hidden";
+      return;
+    }
+
+    const height = bar.offsetHeight;
+    const width = bar.offsetWidth;
+
+    let y = bottom + 8;
+    if (y + height > viewportHeight - 8) {
+      const above = top - height - 8;
+      y = above >= 8 ? above : Math.max(8, viewportHeight - height - 8);
+    }
+
+    let x = Math.min(left, right - width);
+    x = Math.max(8, Math.min(x, viewportWidth - width - 8));
+
+    bar.style.top = `${Math.round(y)}px`;
+    bar.style.left = `${Math.round(x)}px`;
+    bar.style.visibility = "visible";
+  }
+
+  /**
+   * 目标可能是「整句」（多个 span），也可能是「拖选的一段文字」（一个 Range）。
+   * Range 是实时求值的，所以滚动后位置依然准确 —— 缓存矩形做不到这一点。
+   */
+  private targetRects(): DOMRect[] | null {
+    if (this.currentGroup.length > 0) {
+      return this.currentGroup.map((element) => element.getBoundingClientRect());
+    }
+    if (this.currentRange) return [this.currentRange.getBoundingClientRect()];
+    return null;
+  }
+
+  private scheduleReposition(): void {
+    if (this.repositionQueued) return;
+    this.repositionQueued = true;
+    window.requestAnimationFrame(() => {
+      this.repositionQueued = false;
+      this.positionPopover();
+    });
+  }
+
+  // ---------------- 听原句（把文本发给模型，拿回语音） ----------------
 
   private async speak(): Promise<void> {
     if (!this.currentText.trim()) return;
     this.setResult("");
-    this.setStatus("朗读中…");
+    this.setStatus("合成中…");
     try {
       const source = await speakSentence(this.app, this.plugin, this.currentText);
       this.setStatus(
         source === "cache"
-          ? "已朗读（命中缓存，未计费）"
+          ? "已播放（命中缓存，未计费）"
           : source === "cloud"
-            ? "已朗读（云端合成）"
-            : "已朗读",
+            ? "已播放（模型返回的语音，已缓存）"
+            : "已播放（系统语音）",
       );
     } catch (error) {
       this.reportFailure("朗读", error);
@@ -355,10 +387,6 @@ export class ReadingController {
     this.continuousButton?.setText(this.continuous ? "停止连读" : "连续朗读");
   }
 
-  private textOf(group: HTMLElement[]): string {
-    return group.map((element) => element.textContent ?? "").join("");
-  }
-
   // ---------------- 跟读打分 ----------------
 
   /** 第一次点开始录音，第二次点结束并评分。 */
@@ -370,6 +398,7 @@ export class ReadingController {
     if (!this.currentText.trim()) return;
 
     this.stopContinuous();
+    this.forgetRecording();
 
     try {
       this.recorder = new Recorder();
@@ -393,14 +422,20 @@ export class ReadingController {
     try {
       const recording = await recorder.stop();
       const wav = encodeWav(recording.samples, recording.sampleRate);
-      const dataUri = bytesToDataUri(new Uint8Array(wav), "audio/wav");
+
+      // 先留住音频：即使识别失败，你也应该能回放自己刚才读的
+      this.myRecording = wav;
+      if (this.playbackButton) this.playbackButton.style.display = "";
 
       const settings = this.plugin.settings;
       const apiKey = this.plugin.apiKeys[settings.asrKeyId];
       if (!settings.asrKeyId || !apiKey) {
-        throw new Error("语音识别尚未绑定 Key 或 Key 为空，请到插件设置里处理。");
+        this.setStatus("录音已保留，但识别未配置");
+        this.setResult("语音识别尚未绑定 Key 或 Key 为空，请到插件设置里处理。");
+        return;
       }
 
+      const dataUri = bytesToDataUri(new Uint8Array(wav), "audio/wav");
       const text = await transcribeAudio(
         {
           baseUrl: settings.asrBaseUrl,
@@ -423,10 +458,22 @@ export class ReadingController {
           `漏 ${stats.missing}　多 ${stats.extra}　错 ${stats.wrong}　用时 ${(
             recording.durationMs / 1000
           ).toFixed(1)} 秒`,
+          "点「听我的」可以回放刚才的录音，和「听原句」对比。",
         ].join("\n"),
       );
     } catch (error) {
       this.reportFailure("跟读评分", error);
+    }
+  }
+
+  private async playMyRecording(): Promise<void> {
+    if (!this.myRecording) return;
+    this.setStatus("播放我的录音…");
+    try {
+      await playAudioBytes(this.myRecording, "audio/wav");
+      this.setStatus("已播放我的录音");
+    } catch (error) {
+      this.reportFailure("回放录音", error);
     }
   }
 
@@ -460,13 +507,19 @@ export class ReadingController {
   private dispose(): void {
     this.stopContinuous();
     this.cancelRecording();
+    this.forgetRecording();
     this.bar?.remove();
     this.bar = null;
     this.statusEl = null;
     this.resultEl = null;
     this.shadowButton = null;
+    this.playbackButton = null;
     this.continuousButton = null;
   }
+}
+
+function asElement(node: Node): Element | null {
+  return node instanceof HTMLElement ? node : node.parentElement;
 }
 
 /**
