@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_ASK_PROMPT,
   DEFAULT_PRACTICE_PROMPT,
   parseFeedback,
+  renderAskPrompt,
   renderPrompt,
   type PracticeContext,
 } from "../../src/llm/prompt";
@@ -93,5 +95,31 @@ describe("parseFeedback", () => {
 
   it("falls back when the JSON is broken", () => {
     expect(parseFeedback('{"explain": "x"').explain).toBe('{"explain": "x"');
+  });
+});
+
+describe("renderAskPrompt", () => {
+  it("fills in both the selection and the question", () => {
+    const rendered = renderAskPrompt(DEFAULT_ASK_PROMPT, {
+      text: "The plan is ready.",
+      question: "为什么用现在完成时？",
+    });
+    expect(rendered).toContain("The plan is ready.");
+    expect(rendered).toContain("为什么用现在完成时？");
+    expect(rendered).not.toContain("{{");
+  });
+
+  /**
+   * 这与「讲解」的规则刻意不同：
+   * 讲解是自动生成的，所以禁止整句翻译；提问是用户主动发起的，
+   * 明确要求翻译时就该给 —— 硬禁等于跟用户的意图对着干。
+   */
+  it("forbids unsolicited translation but yields to an explicit request", () => {
+    expect(DEFAULT_ASK_PROMPT).toContain("不要主动给出整句中文翻译");
+    expect(DEFAULT_ASK_PROMPT).toContain("明确要求时，照办");
+  });
+
+  it("keeps the answer bounded unless the user asks for more", () => {
+    expect(DEFAULT_ASK_PROMPT).toContain("三句话以内");
   });
 });

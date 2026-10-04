@@ -8,6 +8,7 @@ import type EchoReadPlugin from "../main";
 import { scoreAttempt } from "../scoring/attempt";
 import { requestPracticeFeedback } from "../llm/client";
 import type { PracticeContext } from "../llm/prompt";
+import { AskModal } from "./ask-modal";
 import { transcribeAudio } from "../speech/client";
 import { stopSpeaking } from "../speech/tts-system";
 import { speakSentence } from "./actions";
@@ -228,6 +229,11 @@ export class ReadingController {
     const bar = document.body.createDiv({ cls: "echo-read-bar" });
 
     bar.createEl("button", { text: "听原句" }).addEventListener("click", () => void this.speak());
+
+    bar.createEl("button", { text: "提问" }).addEventListener("click", () => {
+      if (this.currentText.trim() === "") return;
+      new AskModal(this.app, this.plugin, this.currentText).open();
+    });
 
     this.shadowButton = bar.createEl("button", { text: "跟读打分" });
     this.shadowButton.addEventListener("click", () => void this.toggleShadowing());

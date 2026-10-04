@@ -1,15 +1,19 @@
 import { App, requestUrl } from "obsidian";
 import { buildEndpoint, type Transport } from "../speech/client";
 import {
+  DEFAULT_ASK_PROMPT,
   DEFAULT_PRACTICE_PROMPT,
   parseFeedback,
+  renderAskPrompt,
   renderPrompt,
+  type AskContext,
   type PracticeContext,
   type PracticeFeedback,
 } from "./prompt";
 
 export const PROMPT_DIR = "_lingo/prompts";
 export const PRACTICE_PROMPT_PATH = "_lingo/prompts/practice-review.md";
+export const ASK_PROMPT_PATH = "_lingo/prompts/ask-selection.md";
 
 export interface LlmClientOptions {
   baseUrl: string;
@@ -78,28 +82,58 @@ export function extractMessage(payload: unknown): string {
  * 随 vault 同步到 iPad，改坏了删掉文件即回退默认。
  */
 export async function loadPracticePrompt(app: App): Promise<string> {
+  return loadPrompt(app, PRACTICE_PROMPT_PATH, DEFAULT_PRACTICE_PROMPT);
+}
+
+export async function loadAskPrompt(app: App): Promise<string> {
+  return loadPrompt(app, ASK_PROMPT_PATH, DEFAULT_ASK_PROMPT);
+}
+
+/** 读 vault 里的提示词文件；没有或读不到就用内置默认值。 */
+async function loadPrompt(app: App, path: string, fallback: string): Promise<string> {
   const adapter = app.vault.adapter;
   try {
-    if (await adapter.exists(PRACTICE_PROMPT_PATH)) {
-      const content = await adapter.read(PRACTICE_PROMPT_PATH);
+    if (await adapter.exists(path)) {
+      const content = await adapter.read(path);
       if (content.trim() !== "") return content;
     }
   } catch {
     // 读不到就用默认值，不让提示词问题阻断功能
   }
-  return DEFAULT_PRACTICE_PROMPT;
+  return fallback;
 }
 
 /** 首次使用时把默认提示词写出来，方便直接编辑。 */
 export async function ensurePracticePromptFile(app: App): Promise<void> {
+  await ensurePromptFile(app, PRACTICE_PROMPT_PATH, DEFAULT_PRACTICE_PROMPT);
+  await ensurePromptFile(app, ASK_PROMPT_PATH, DEFAULT_ASK_PROMPT);
+}
+
+async function ensurePromptFile(app: App, path: string, content: string): Promise<void> {
   const adapter = app.vault.adapter;
   try {
-    if (await adapter.exists(PRACTICE_PROMPT_PATH)) return;
+    if (await adapter.exists(path)) return;
     if (!(await adapter.exists(PROMPT_DIR))) await adapter.mkdir(PROMPT_DIR);
-    await adapter.write(PRACTICE_PROMPT_PATH, DEFAULT_PRACTICE_PROMPT);
+    await adapter.write(path, content);
   } catch {
     // 写不进去也不影响功能，只是提示词没法在 vault 里编辑
   }
+}
+
+/**
+ * 就选中的文本向模型提问。
+ *
+ * 与 requestPracticeFeedback 的区别在于**谁发起的**：
+ * 那是系统自动生成的反馈，这是用户主动问的，所以提示词也不同。
+ */
+export async function askAboutSelection(
+  app: App,
+  options: LlmClientOptions,
+  context: AskContext,
+): Promise<string> {
+  const template = await loadAskPrompt(app);
+  const prompt = renderAskPrompt(template, context);
+  return chatCompletion(options, prompt, "请回答。", 800);
 }
 
 /** 用一次练习的结果向模型索要讲解与卡片建议。 */

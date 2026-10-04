@@ -59,7 +59,7 @@ export const DEFAULT_PRACTICE_PROMPT = [
 
 /** 用练习上下文填充提示词模板。未知占位符原样保留，便于排查。 */
 export function renderPrompt(template: string, context: PracticeContext): string {
-  const values: Record<string, string> = {
+  return fillTemplate(template, {
     TEXT: context.text,
     RECOGNIZED: context.recognized || "（没有识别到内容）",
     ACCURACY: String(context.accuracy),
@@ -68,8 +68,46 @@ export function renderPrompt(template: string, context: PracticeContext): string
     MISSING: String(context.missing),
     EXTRA: String(context.extra),
     WRONG: String(context.wrong),
-  };
+  });
+}
 
+export interface AskContext {
+  /** 用户选中的文本。 */
+  text: string;
+  /** 用户的问题。 */
+  question: string;
+}
+
+/**
+ * 提问用的提示词。可被 _lingo/prompts/ask-selection.md 覆盖。
+ *
+ * 与「讲解」的关键区别：那是**自动生成**的反馈，所以禁止整句翻译；
+ * 这是用户**主动**发问，明确要求翻译时就该给。规则写的是
+ * "用户没有明确要求就不要主动翻译" —— 保留英文阅读的初衷，
+ * 但不跟用户的明确意图对着干。
+ */
+export const DEFAULT_ASK_PROMPT = [
+  "你是一位英语阅读助手，服务对象是中文母语的学习者。",
+  "",
+  "用户选中的文本：",
+  "{{TEXT}}",
+  "",
+  "用户的问题：",
+  "{{QUESTION}}",
+  "",
+  "要求：",
+  "1. 直接回答用户的问题，不要寒暄。",
+  "2. 如果用户没有明确要求翻译，就不要主动给出整句中文翻译 ——",
+  "   学习者需要自己读原文。但用户明确要求时，照办。",
+  "3. 解释可以中英混排；涉及发音时可以用音标。",
+  "4. 除非用户要求展开，回答控制在三句话以内。",
+].join("\n");
+
+export function renderAskPrompt(template: string, context: AskContext): string {
+  return fillTemplate(template, { TEXT: context.text, QUESTION: context.question });
+}
+
+function fillTemplate(template: string, values: Record<string, string>): string {
   return template.replace(/\{\{(\w+)\}\}/g, (match, name: string) =>
     name in values ? values[name] : match,
   );
