@@ -1252,7 +1252,7 @@ ${ids.join("\n")}`;
   }
   async runWithDiagnostics(button, idleLabel, busyLabel, action) {
     this.diagnosticLines = [];
-    this.appendDiagnostic(`构建时间：${"2026-10-04T05:00:18.043Z"}`);
+    this.appendDiagnostic(`构建时间：${"2026-10-04T05:05:41.312Z"}`);
     this.appendDiagnostic(`时间：${(/* @__PURE__ */ new Date()).toLocaleString()}`);
     this.appendDiagnostic(`协议：${this.plugin.settings.transport}`);
     this.appendDiagnostic(`模型：${this.plugin.settings.asrModel}`);
