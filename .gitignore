@@ -3,6 +3,9 @@ node_modules/
 .DS_Store
 dist/
 
+# 设计文档与实现计划：本地保留，不进公开仓库
+docs/
+
 # 本机部署目标（含个人路径，不进版本历史）
 .deploy-target
 
