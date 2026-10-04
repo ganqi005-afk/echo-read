@@ -3,7 +3,12 @@ import { bytesToDataUri } from "./core/base64";
 import { diffDictation } from "./core/diff";
 import { encodeWav } from "./core/wav";
 import { scoreAttempt } from "./scoring/attempt";
-import { DEFAULT_ASR_MODEL, DEFAULT_BASE_URL, transcribeAudio } from "./speech/client";
+import {
+  DEFAULT_ASR_MODEL,
+  DEFAULT_BASE_URL,
+  transcribeAudio,
+  type Transport,
+} from "./speech/client";
 
 /**
  * 临时调试入口，仅用于 Plan 2 Task 9 的真实接口验收。
@@ -24,6 +29,7 @@ export function installDebugHook(): void {
       expected?: string,
       baseUrl: string = DEFAULT_BASE_URL,
       model: string = DEFAULT_ASR_MODEL,
+      transport: Transport = "dashscope-native",
     ): Promise<Record<string, unknown>> {
       if (!current) throw new Error("请先调用 start()");
       const recorder = current;
@@ -34,7 +40,7 @@ export function installDebugHook(): void {
       const dataUri = bytesToDataUri(new Uint8Array(wav), "audio/wav");
 
       const startedAt = Date.now();
-      const text = await transcribeAudio({ baseUrl, apiKey, model }, dataUri);
+      const text = await transcribeAudio({ baseUrl, apiKey, model, transport }, dataUri);
 
       const result: Record<string, unknown> = {
         seconds: Math.round(recording.durationMs / 100) / 10,

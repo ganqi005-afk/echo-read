@@ -1,13 +1,30 @@
 import { requestUrl } from "obsidian";
-import { buildAsrBody, extractTranscript } from "./asr-request";
+import {
+  buildAsrBody,
+  buildOpenAiCompatibleBody,
+  extractTranscript,
+} from "./asr-request";
 
 export const DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com";
 export const DEFAULT_ASR_MODEL = "qwen-audio-3.0-asr-flash";
+
+export type Transport = "dashscope-native" | "openai-compatible";
 
 export interface AsrClientOptions {
   baseUrl: string;
   apiKey: string;
   model: string;
+  transport: Transport;
+}
+
+export const DASHSCOPE_NATIVE_PATH =
+  "/api/v1/services/aigc/multimodal-generation/generation";
+export const OPENAI_COMPATIBLE_PATH = "/chat/completions";
+
+export function buildEndpoint(baseUrl: string, transport: Transport): string {
+  const base = baseUrl.replace(/\/+$/, "");
+  const path = transport === "openai-compatible" ? OPENAI_COMPATIBLE_PATH : DASHSCOPE_NATIVE_PATH;
+  return `${base}${path}`;
 }
 
 /**
@@ -23,7 +40,15 @@ export async function transcribeAudio(
     throw new Error("尚未配置 API Key，请先在插件设置中填写。");
   }
 
-  const url = `${options.baseUrl.replace(/\/+$/, "")}/api/v1/services/aigc/multimodal-generation/generation`;
+  const url = buildEndpoint(options.baseUrl, options.transport);
+  const requestBody =
+    options.transport === "openai-compatible"
+      ? buildOpenAiCompatibleBody({
+          model: options.model,
+          audioDataUri,
+          sampleRate: 16000,
+        })
+      : buildAsrBody({ model: options.model, audioDataUri, sampleRate: 16000 });
 
   const response = await requestUrl({
     url,
@@ -33,9 +58,7 @@ export async function transcribeAudio(
       "Content-Type": "application/json",
       "X-DashScope-SSE": "disable",
     },
-    body: JSON.stringify(
-      buildAsrBody({ model: options.model, audioDataUri, sampleRate: 16000 }),
-    ),
+    body: JSON.stringify(requestBody),
     throw: false,
   });
 

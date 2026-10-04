@@ -5,6 +5,10 @@ export interface AsrRequestOptions {
   format?: string;
 }
 
+export function stripDataUriPrefix(dataUri: string): string {
+  return dataUri.replace(/^data:[^;]+;base64,/, "");
+}
+
 export function buildAsrBody(options: AsrRequestOptions): unknown {
   return {
     model: options.model,
@@ -26,6 +30,32 @@ export function buildAsrBody(options: AsrRequestOptions): unknown {
 }
 
 /**
+ * OpenAI 兼容端点（例如百炼 Token Plan）的请求体。
+ * 与 DashScope 原生格式有两处关键差异：
+ * 1. 音频只传纯 base64，不带 `data:...;base64,` 前缀
+ * 2. 音频格式作为独立字段传入
+ */
+export function buildOpenAiCompatibleBody(options: AsrRequestOptions): unknown {
+  return {
+    model: options.model,
+    messages: [
+      {
+        role: "user",
+        content: [
+          {
+            type: "input_audio",
+            input_audio: {
+              data: stripDataUriPrefix(options.audioDataUri),
+              format: options.format ?? "wav",
+            },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+/**
  * 文档没有给出完整响应示例，因此按已知的几种形态依次尝试。
  * 全部失败时抛错并附带原始响应，便于一次性校正。
  */
@@ -41,27 +71,20 @@ interface LooseRecord {
 
 function tryExtract(payload: unknown): string | undefined {
   if (!payload || typeof payload !== "object") return undefined;
-  const output = (payload as LooseRecord).output;
+  const root = payload as LooseRecord;
+
+  // OpenAI 兼容格式：choices 在顶层
+  const direct = readChoices(root);
+  if (direct !== undefined) return direct;
+
+  const output = root.output;
   if (!output || typeof output !== "object") return undefined;
   const node = output as LooseRecord;
 
   if (typeof node.text === "string") return node.text;
 
-  const choices = node.choices;
-  if (Array.isArray(choices) && choices.length > 0) {
-    const message = (choices[0] as LooseRecord | undefined)?.message;
-    const content = (message as LooseRecord | undefined)?.content;
-    if (typeof content === "string") return content;
-    if (Array.isArray(content)) {
-      const joined = content
-        .map((part) => {
-          const text = (part as LooseRecord | undefined)?.text;
-          return typeof text === "string" ? text : "";
-        })
-        .join("");
-      if (joined.trim() !== "") return joined;
-    }
-  }
+  const nested = readChoices(node);
+  if (nested !== undefined) return nested;
 
   const results = node.results;
   if (Array.isArray(results) && results.length > 0) {
@@ -70,6 +93,26 @@ function tryExtract(payload: unknown): string | undefined {
     if (typeof first?.text === "string") return first.text;
   }
 
+  return undefined;
+}
+
+function readChoices(node: LooseRecord): string | undefined {
+  const choices = node.choices;
+  if (!Array.isArray(choices) || choices.length === 0) return undefined;
+
+  const message = (choices[0] as LooseRecord | undefined)?.message;
+  const content = (message as LooseRecord | undefined)?.content;
+
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    const joined = content
+      .map((part) => {
+        const text = (part as LooseRecord | undefined)?.text;
+        return typeof text === "string" ? text : "";
+      })
+      .join("");
+    if (joined.trim() !== "") return joined;
+  }
   return undefined;
 }
 

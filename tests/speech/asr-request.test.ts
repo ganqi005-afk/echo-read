@@ -1,10 +1,24 @@
 import { describe, expect, it } from "vitest";
-import { buildAsrBody, extractTranscript } from "../../src/speech/asr-request";
+import {
+  buildAsrBody,
+  buildOpenAiCompatibleBody,
+  extractTranscript,
+  stripDataUriPrefix,
+} from "../../src/speech/asr-request";
 
 interface LooseBody {
   model: string;
   input: { messages: Array<{ role: string; content: Array<{ type: string; input_audio: { data: string } }> }> };
   parameters: { format: string; sample_rate: number };
+}
+
+interface OpenAiBody {
+  model: string;
+  input?: unknown;
+  messages: Array<{
+    role: string;
+    content: Array<{ type: string; input_audio: { data: string; format: string } }>;
+  }>;
 }
 
 describe("buildAsrBody", () => {
@@ -33,6 +47,36 @@ describe("buildAsrBody", () => {
   });
 });
 
+describe("buildOpenAiCompatibleBody", () => {
+  it("strips the data uri prefix and moves the format into its own field", () => {
+    const body = buildOpenAiCompatibleBody({
+      model: "qwen-audio-3.0-asr-flash",
+      audioDataUri: "data:audio/wav;base64,QUJD",
+    }) as OpenAiBody;
+
+    expect(body.messages[0].content[0].input_audio.data).toBe("QUJD");
+    expect(body.messages[0].content[0].input_audio.format).toBe("wav");
+  });
+
+  it("has no DashScope-style input wrapper", () => {
+    const body = buildOpenAiCompatibleBody({
+      model: "m",
+      audioDataUri: "data:audio/wav;base64,QUJD",
+    }) as OpenAiBody;
+    expect(body.input).toBeUndefined();
+  });
+});
+
+describe("stripDataUriPrefix", () => {
+  it("removes the prefix", () => {
+    expect(stripDataUriPrefix("data:audio/wav;base64,QUJD")).toBe("QUJD");
+  });
+
+  it("leaves raw base64 untouched", () => {
+    expect(stripDataUriPrefix("QUJD")).toBe("QUJD");
+  });
+});
+
 describe("extractTranscript", () => {
   it("reads the multimodal choices shape", () => {
     const payload = {
@@ -57,5 +101,10 @@ describe("extractTranscript", () => {
 
   it("throws with the raw payload when nothing matches", () => {
     expect(() => extractTranscript({ output: { unexpected: 1 } })).toThrow(/unexpected/);
+  });
+
+  it("reads top-level choices from an OpenAI-compatible payload", () => {
+    const payload = { choices: [{ message: { content: "openai style" } }] };
+    expect(extractTranscript(payload)).toBe("openai style");
   });
 });
