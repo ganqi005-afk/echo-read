@@ -124,6 +124,8 @@ export interface EchoReadSettings {
   speechRate: number;
   /** 点一句就直接朗读，省掉"先选中再点按钮"的那一步。 */
   speakOnClick: boolean;
+  /** 双击一个单词直接听发音。与点句朗读分开，因为手势意图不同。 */
+  speakOnDoubleClick: boolean;
 
   /**
    * 示范音缓存策略。0 表示不限制。
@@ -167,6 +169,7 @@ export const DEFAULT_SETTINGS: EchoReadSettings = {
   voiceURI: "",
   speechRate: 1,
   speakOnClick: true,
+  speakOnDoubleClick: true,
   audioCacheMaxAgeDays: 30,
   audioCacheMaxBytes: 200 * 1024 * 1024,
 };

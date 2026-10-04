@@ -514,6 +514,15 @@ export class EchoReadSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
+      .setName("双击单词即朗读")
+      .setDesc("双击一个单词直接听发音。双击是明确的手势，拖选则不会自动发声。")
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.speakOnDoubleClick).onChange(async (value) => {
+          await this.plugin.updateSettings({ speakOnDoubleClick: value });
+        }),
+      );
+
+    new Setting(containerEl)
       .setName("语速")
       .addSlider((slider) =>
         slider

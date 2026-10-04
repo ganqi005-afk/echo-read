@@ -1500,6 +1500,7 @@ var DEFAULT_SETTINGS = {
   voiceURI: "",
   speechRate: 1,
   speakOnClick: true,
+  speakOnDoubleClick: true,
   audioCacheMaxAgeDays: 30,
   audioCacheMaxBytes: 200 * 1024 * 1024
 };
@@ -1942,6 +1943,194 @@ function wrapTextNode(node, index) {
   span.appendChild(node);
 }
 
+// src/review/schedule.ts
+var EBBINGHAUS_INTERVALS = [1, 2, 4, 7, 15, 30, 90];
+function addDays(date, days) {
+  const next = new Date(date.getTime());
+  next.setDate(next.getDate() + days);
+  return next;
+}
+function toDateString(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+function parseDateString(value) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
+  if (!match) return void 0;
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  return Number.isNaN(date.getTime()) ? void 0 : date;
+}
+function isDue(due, today) {
+  const parsed = parseDateString(due);
+  if (!parsed) return true;
+  return toDateString(parsed) <= toDateString(today);
+}
+function nextSchedule(step, remembered, today) {
+  const safeStep = Number.isFinite(step) && step >= 0 ? Math.trunc(step) : 0;
+  const nextStep = remembered ? Math.min(safeStep + 1, EBBINGHAUS_INTERVALS.length - 1) : 0;
+  const interval = EBBINGHAUS_INTERVALS[nextStep];
+  return { step: nextStep, due: toDateString(addDays(today, interval)) };
+}
+function intervalForStep(step) {
+  const safeStep = Number.isFinite(step) ? Math.trunc(step) : 0;
+  return EBBINGHAUS_INTERVALS[Math.max(0, Math.min(safeStep, EBBINGHAUS_INTERVALS.length - 1))];
+}
+
+// src/review/cards.ts
+var META_PATTERN = /<!--\s*lingo-card\s+(\{[\s\S]*?\})\s*-->/g;
+var CHECK_PATTERN = /^-\s*\[( |x|X)\]\s*(.*?)<!--\s*lingo-(\S+?)\s*-->\s*$/;
+function serializeCard(card) {
+  const meta = JSON.stringify(card);
+  return [
+    `- **${card.front}**`,
+    `  - 答案：${card.back}`,
+    `  - 来源：${card.source}　·　第 ${card.step + 1} 档　·　下次 ${card.due}`,
+    `  <!-- lingo-card ${meta} -->`
+  ].join("\n");
+}
+function parseCards(markdown) {
+  const cards = [];
+  for (const match of markdown.matchAll(META_PATTERN)) {
+    try {
+      const parsed = JSON.parse(match[1]);
+      if (typeof parsed.id !== "string" || parsed.id === "") continue;
+      cards.push({
+        id: parsed.id,
+        term: typeof parsed.term === "string" ? parsed.term : "",
+        front: typeof parsed.front === "string" ? parsed.front : "",
+        back: typeof parsed.back === "string" ? parsed.back : "",
+        source: typeof parsed.source === "string" ? parsed.source : "",
+        step: typeof parsed.step === "number" ? parsed.step : 0,
+        due: typeof parsed.due === "string" ? parsed.due : ""
+      });
+    } catch {
+    }
+  }
+  return cards;
+}
+function selectDueCards(cards, today) {
+  return cards.filter((card) => isDue(card.due, today)).sort((a, b) => a.due.localeCompare(b.due) || a.id.localeCompare(b.id));
+}
+function parseQueueChecks(markdown) {
+  const checks = /* @__PURE__ */ new Map();
+  for (const line of markdown.split("\n")) {
+    const match = CHECK_PATTERN.exec(line);
+    if (!match) continue;
+    checks.set(match[3], match[1].toLowerCase() === "x");
+  }
+  return checks;
+}
+function applyQueueChecks(cards, checks, today) {
+  return cards.map((card) => {
+    if (checks.get(card.id) !== true) return card;
+    const next = nextSchedule(card.step, true, today);
+    return { ...card, step: next.step, due: next.due };
+  });
+}
+function buildCardsFile(cards) {
+  const header = [
+    "# Echo Read 复习卡片",
+    "",
+    "这个文件由插件维护。可见部分是正常 Markdown，`[[来源笔记]]` 会让来源笔记的",
+    "反向链接面板里出现这里 —— 双向引用就是这样自动建立的。",
+    "",
+    "注释里的数据不要手改。",
+    ""
+  ];
+  return [...header, ...cards.map(serializeCard), ""].join("\n");
+}
+function buildQueueFile(cards, today) {
+  const due = selectDueCards(cards, today);
+  const lines = [
+    `# 今日复习 · ${toDateString(today)}`,
+    "",
+    due.length === 0 ? "今天没有到期的卡片。" : `共 ${due.length} 张。**勾选表示「记得」**，会推进到下一档；没勾的保持原档位。`,
+    ""
+  ];
+  for (const card of due) {
+    lines.push(`- [ ] ${card.front} <!-- lingo-${card.id} -->`);
+    lines.push(`	> [!quote]- 答案${card.term ? ` · ${card.term}` : ""}`);
+    lines.push(`	> ${card.back}`);
+    lines.push(`	> 来源：${card.source}　·　${intervalForStep(card.step)} 天档`);
+    lines.push("");
+  }
+  return lines.join("\n");
+}
+function makeCardId(existing, seed) {
+  const base = seed.toLowerCase().replace(/[^a-z0-9]+/g, "").slice(0, 12) || "card";
+  if (!existing.includes(base)) return base;
+  let index = 2;
+  while (existing.includes(`${base}-${index}`)) index++;
+  return `${base}-${index}`;
+}
+function createCard(id, term, fullSentence, source, today) {
+  return {
+    id,
+    term,
+    front: blankOutTerm(fullSentence, term),
+    back: fullSentence,
+    source,
+    step: 0,
+    due: toDateString(addDays(today, intervalForStep(0)))
+  };
+}
+function blankOutTerm(sentence, term) {
+  const target = term.trim();
+  if (target === "") return sentence;
+  const escaped = target.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const head = /^\w/.test(target) ? "\\b" : "";
+  const tail = /\w$/.test(target) ? "\\b" : "";
+  const pattern = new RegExp(`${head}${escaped}${tail}`, "i");
+  if (!pattern.test(sentence)) return sentence;
+  return sentence.replace(pattern, "____");
+}
+
+// src/review/store.ts
+var REVIEW_DIR = "_lingo";
+var CARDS_PATH = "_lingo/cards.md";
+var REVIEW_PATH = "_lingo/review.md";
+async function readCards(app) {
+  const adapter = app.vault.adapter;
+  if (!await adapter.exists(CARDS_PATH)) return [];
+  try {
+    return parseCards(await adapter.read(CARDS_PATH));
+  } catch {
+    return [];
+  }
+}
+async function writeCards(app, cards) {
+  const adapter = app.vault.adapter;
+  if (!await adapter.exists(REVIEW_DIR)) await adapter.mkdir(REVIEW_DIR);
+  await adapter.write(CARDS_PATH, buildCardsFile(cards));
+}
+async function addCards(app, incoming) {
+  const existing = await readCards(app);
+  const known = new Set(existing.map((card) => card.id));
+  const fresh = incoming.filter((card) => !known.has(card.id));
+  if (fresh.length === 0) return 0;
+  await writeCards(app, [...existing, ...fresh]);
+  return fresh.length;
+}
+async function generateReviewQueue(app, today) {
+  const adapter = app.vault.adapter;
+  const cards = await readCards(app);
+  let advanced = 0;
+  let updated = cards;
+  if (await adapter.exists(REVIEW_PATH)) {
+    try {
+      const checks = parseQueueChecks(await adapter.read(REVIEW_PATH));
+      updated = applyQueueChecks(cards, checks, today);
+      advanced = updated.filter((card, index) => card.step !== cards[index].step).length;
+      if (advanced > 0) await writeCards(app, updated);
+    } catch {
+    }
+  }
+  await adapter.write(REVIEW_PATH, buildQueueFile(updated, today));
+  return { queued: selectDueCards(updated, today).length, advanced };
+}
+
 // src/reader/controller.ts
 var ReadingController = class {
   constructor(app, plugin) {
@@ -1978,6 +2167,7 @@ var ReadingController = class {
     this.plugin.registerDomEvent(document, "click", (event) => this.onClick(event));
     this.plugin.registerDomEvent(document, "mouseup", () => this.scheduleSelectionCheck());
     this.plugin.registerDomEvent(document, "keyup", () => this.scheduleSelectionCheck());
+    this.plugin.registerDomEvent(document, "dblclick", (event) => this.onDoubleClick(event));
     this.plugin.registerDomEvent(window, "scroll", () => this.scheduleReposition(), true);
     this.plugin.registerDomEvent(window, "resize", () => this.scheduleReposition());
     this.plugin.register(() => this.dispose());
@@ -2033,6 +2223,26 @@ var ReadingController = class {
     this.prepareForNewTarget();
     this.selectSentence(index, span);
     if (this.plugin.settings.speakOnClick) void this.speak();
+  }
+  /**
+   * 双击一个单词直接听发音。
+   *
+   * 与"拖选后手动点"的区别在于**意图**：双击是一个明确的手势 ——
+   * "我想知道这个词怎么读"。而拖选经常只是为了复制，所以那里不自动发声。
+   *
+   * 双击时浏览器会先选中该词，mouseup 处理器已经把操作对象设好了；
+   * 这里只负责补上"发声"这一步。
+   */
+  onDoubleClick(event) {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    if (this.bar && this.bar.contains(target)) return;
+    if (target.closest("a")) return;
+    if (!this.plugin.settings.speakOnDoubleClick) return;
+    window.setTimeout(() => {
+      if (this.currentText.trim() === "") return;
+      void this.speak();
+    }, 0);
   }
   selectSentence(index, span) {
     const scope = span.closest(`[${PARAGRAPH_ATTR}]`) ?? document;
@@ -2384,11 +2594,32 @@ var ReadingController = class {
       for (const card of feedback.cards) {
         lines.push(`卡片建议：${card.term} → ${card.cloze}`);
       }
+      const added = await this.saveSuggestedCards(feedback.cards.map((card) => card.term));
+      if (added > 0) lines.push(`已加入复习卡片：${added} 张（见 _lingo/cards.md）`);
       this.appendResult(lines.length > 0 ? lines.join("\n") : "模型没有给出额外说明。");
       this.setStatus("讲解完成");
     } catch (error) {
       this.reportFailure("讲解", error);
     }
+  }
+  // 把建议的词做成卡片并写进 cards.md。返回实际新增数量（重复的会被跳过）。
+  async saveSuggestedCards(terms) {
+    const source = this.sourceLink();
+    if (source === "" || this.currentText.trim() === "" || terms.length === 0) return 0;
+    const existing = await readCards(this.app);
+    const ids = existing.map((card) => card.id);
+    const today = /* @__PURE__ */ new Date();
+    const drafts = terms.filter((term) => term.trim() !== "").map((term) => {
+      const id = makeCardId(ids, term);
+      ids.push(id);
+      return createCard(id, term, this.currentText, source, today);
+    });
+    return addCards(this.app, drafts);
+  }
+  /** 当前笔记的 wikilink —— 卡片靠它产生反向链接。 */
+  sourceLink() {
+    const file = this.app.workspace.getActiveFile();
+    return file ? `[[${file.basename}]]` : "";
   }
   async playMyRecording() {
     if (!this.myRecording) return;
@@ -2889,6 +3120,11 @@ var EchoReadSettingTab = class extends import_obsidian7.PluginSettingTab {
         await this.plugin.updateSettings({ speakOnClick: value });
       })
     );
+    new import_obsidian7.Setting(containerEl).setName("双击单词即朗读").setDesc("双击一个单词直接听发音。双击是明确的手势，拖选则不会自动发声。").addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.speakOnDoubleClick).onChange(async (value) => {
+        await this.plugin.updateSettings({ speakOnDoubleClick: value });
+      })
+    );
     new import_obsidian7.Setting(containerEl).setName("语速").addSlider(
       (slider) => slider.setLimits(0.5, 1.5, 0.05).setValue(this.plugin.settings.speechRate).setDynamicTooltip().onChange(async (value) => {
         await this.plugin.updateSettings({ speechRate: value });
@@ -3103,7 +3339,7 @@ ${ids.join("\n")}`;
   }
   async runWithDiagnostics(button, idleLabel, busyLabel, context, action) {
     this.diagnosticLines = [];
-    this.appendDiagnostic(`构建时间：${"2026-10-04T11:09:50.606Z"}`);
+    this.appendDiagnostic(`构建时间：${"2026-10-04T11:27:33.376Z"}`);
     this.appendDiagnostic(`时间：${(/* @__PURE__ */ new Date()).toLocaleString()}`);
     for (const line of context) this.appendDiagnostic(line);
     try {
@@ -3240,6 +3476,11 @@ var EchoReadPlugin = class extends import_obsidian8.Plugin {
       name: "打开录音工作台",
       callback: () => this.openRecorder()
     });
+    this.addCommand({
+      id: "build-review-queue",
+      name: "生成今日复习队列",
+      callback: () => void this.buildReviewQueue()
+    });
     new ReadingController(this.app, this).register();
     void pruneAudioCache(this.app, {
       maxAgeDays: this.settings.audioCacheMaxAgeDays,
@@ -3252,8 +3493,29 @@ var EchoReadPlugin = class extends import_obsidian8.Plugin {
   openRecorder() {
     new RecorderModal(this.app, this).open();
   }
+  /**
+   * 生成今日复习队列到 _lingo/review.md。
+   *
+   * 会先消化上一份队列里的勾选结果，再投影出今天的清单 ——
+   * 所以「记得」是推进到下一档的信号，而不是一个装饰性的对勾。
+   */
+  async buildReviewQueue(notify = true) {
+    try {
+      const result = await generateReviewQueue(this.app, /* @__PURE__ */ new Date());
+      if (notify) {
+        new import_obsidian8.Notice(
+          `今日复习：${result.queued} 张` + (result.advanced > 0 ? `，上次勾选的 ${result.advanced} 张已推进到下一档` : "")
+        );
+      }
+    } catch (error) {
+      if (notify) new import_obsidian8.Notice(`生成复习队列失败：${messageOf3(error)}`);
+    }
+  }
   async updateSettings(patch) {
     this.settings = mergeSettings({ ...this.settings, ...patch });
     await this.saveData(this.settings);
   }
 };
+function messageOf3(error) {
+  return error instanceof Error ? error.message : String(error);
+}

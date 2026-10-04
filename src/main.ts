@@ -1,9 +1,10 @@
-import { Plugin } from "obsidian";
+import { Notice, Plugin } from "obsidian";
 import { RecorderModal } from "./recorder-modal";
 import { ReadingController } from "./reader/controller";
 import { loadKeyValues } from "./settings/store";
 import { pruneAudioCache } from "./store/audio-cache";
 import { ensurePracticePromptFile } from "./llm/client";
+import { generateReviewQueue } from "./review/store";
 import { EchoReadSettingTab } from "./settings/tab";
 import { DEFAULT_SETTINGS, mergeSettings, type EchoReadSettings } from "./settings/types";
 
@@ -27,6 +28,11 @@ export default class EchoReadPlugin extends Plugin {
       name: "打开录音工作台",
       callback: () => this.openRecorder(),
     });
+    this.addCommand({
+      id: "build-review-queue",
+      name: "生成今日复习队列",
+      callback: () => void this.buildReviewQueue(),
+    });
     // 阅读视图交互：点句聚焦 + 底部操作条
     new ReadingController(this.app, this).register();
 
@@ -47,8 +53,32 @@ export default class EchoReadPlugin extends Plugin {
     new RecorderModal(this.app, this).open();
   }
 
+  /**
+   * 生成今日复习队列到 _lingo/review.md。
+   *
+   * 会先消化上一份队列里的勾选结果，再投影出今天的清单 ——
+   * 所以「记得」是推进到下一档的信号，而不是一个装饰性的对勾。
+   */
+  async buildReviewQueue(notify = true): Promise<void> {
+    try {
+      const result = await generateReviewQueue(this.app, new Date());
+      if (notify) {
+        new Notice(
+          `今日复习：${result.queued} 张` +
+            (result.advanced > 0 ? `，上次勾选的 ${result.advanced} 张已推进到下一档` : ""),
+        );
+      }
+    } catch (error) {
+      if (notify) new Notice(`生成复习队列失败：${messageOf(error)}`);
+    }
+  }
+
   async updateSettings(patch: Partial<EchoReadSettings>): Promise<void> {
     this.settings = mergeSettings({ ...this.settings, ...patch });
     await this.saveData(this.settings);
   }
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

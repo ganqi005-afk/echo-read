@@ -22,6 +22,8 @@ import {
 import { audioCachePath, listAudioFilePaths } from "../store/audio-cache";
 import { voiceSignature } from "../speech/tts-request";
 import { toTtsVoice } from "../settings/types";
+import { createCard, makeCardId } from "../review/cards";
+import { addCards, readCards } from "../review/store";
 
 /**
  * 阅读视图交互。
@@ -75,6 +77,7 @@ export class ReadingController {
     // 拖选或键盘选择结束后，看是否有文本被选中
     this.plugin.registerDomEvent(document, "mouseup", () => this.scheduleSelectionCheck());
     this.plugin.registerDomEvent(document, "keyup", () => this.scheduleSelectionCheck());
+    this.plugin.registerDomEvent(document, "dblclick", (event) => this.onDoubleClick(event));
     // 滚动或改变窗口大小时让操作条跟着目标走（iPad 分屏会改变视口宽度）
     this.plugin.registerDomEvent(window, "scroll", () => this.scheduleReposition(), true);
     this.plugin.registerDomEvent(window, "resize", () => this.scheduleReposition());
@@ -148,6 +151,29 @@ export class ReadingController {
 
     // 一步到位：选中的同时就读出来
     if (this.plugin.settings.speakOnClick) void this.speak();
+  }
+
+  /**
+   * 双击一个单词直接听发音。
+   *
+   * 与"拖选后手动点"的区别在于**意图**：双击是一个明确的手势 ——
+   * "我想知道这个词怎么读"。而拖选经常只是为了复制，所以那里不自动发声。
+   *
+   * 双击时浏览器会先选中该词，mouseup 处理器已经把操作对象设好了；
+   * 这里只负责补上"发声"这一步。
+   */
+  private onDoubleClick(event: MouseEvent): void {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    if (this.bar && this.bar.contains(target)) return;
+    if (target.closest("a")) return;
+    if (!this.plugin.settings.speakOnDoubleClick) return;
+
+    // 让 mouseup 里排队的选区处理先跑完，否则可能读的是上一个对象
+    window.setTimeout(() => {
+      if (this.currentText.trim() === "") return;
+      void this.speak();
+    }, 0);
   }
 
   private selectSentence(index: number, span: HTMLElement): void {
@@ -586,11 +612,41 @@ export class ReadingController {
         lines.push(`卡片建议：${card.term} → ${card.cloze}`);
       }
 
+      // 把模型建议的词直接变成复习卡片 —— 这是"学过就忘"那个洞的入口
+      const added = await this.saveSuggestedCards(feedback.cards.map((card) => card.term));
+      if (added > 0) lines.push(`已加入复习卡片：${added} 张（见 _lingo/cards.md）`);
+
       this.appendResult(lines.length > 0 ? lines.join("\n") : "模型没有给出额外说明。");
       this.setStatus("讲解完成");
     } catch (error) {
       this.reportFailure("讲解", error);
     }
+  }
+
+  // 把建议的词做成卡片并写进 cards.md。返回实际新增数量（重复的会被跳过）。
+  private async saveSuggestedCards(terms: string[]): Promise<number> {
+    const source = this.sourceLink();
+    if (source === "" || this.currentText.trim() === "" || terms.length === 0) return 0;
+
+    const existing = await readCards(this.app);
+    const ids = existing.map((card) => card.id);
+    const today = new Date();
+
+    const drafts = terms
+      .filter((term) => term.trim() !== "")
+      .map((term) => {
+        const id = makeCardId(ids, term);
+        ids.push(id);
+        return createCard(id, term, this.currentText, source, today);
+      });
+
+    return addCards(this.app, drafts);
+  }
+
+  /** 当前笔记的 wikilink —— 卡片靠它产生反向链接。 */
+  private sourceLink(): string {
+    const file = this.app.workspace.getActiveFile();
+    return file ? `[[${file.basename}]]` : "";
   }
 
   private async playMyRecording(): Promise<void> {
