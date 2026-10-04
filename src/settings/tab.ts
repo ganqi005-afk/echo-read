@@ -10,6 +10,11 @@ import {
 } from "../speech/client";
 import { loadVoices } from "../speech/tts-system";
 import type EchoReadPlugin from "../main";
+import {
+  classifyApiKey,
+  describeApiKeyKind,
+  describeKeyEndpointMismatch,
+} from "./key-format";
 import { deleteSecret, hasSecret, loadSecret, saveSecret } from "./store";
 import {
   PROVIDER_PRESETS,
@@ -219,6 +224,19 @@ export class EchoReadSettingTab extends PluginSettingTab {
           : "状态：已保存，但未解锁 —— 请填写口令后点「仅解锁」。"
         : `状态：尚未保存。该渠道的 Key 以 ${keyPrefixHint} 开头。`,
     );
+
+    const key = this.plugin.unlockedApiKey;
+    if (!key) return;
+
+    element.setText(
+      `${element.getText()} 当前 Key 类型：${describeApiKeyKind(classifyApiKey(key))}。`,
+    );
+
+    const mismatch = describeKeyEndpointMismatch(key, this.plugin.settings.baseUrl);
+    if (mismatch) {
+      element.createEl("br");
+      element.createEl("strong", { text: `⚠ ${mismatch}` });
+    }
   }
 
   // ---------- 朗读 ----------
@@ -342,6 +360,13 @@ export class EchoReadSettingTab extends PluginSettingTab {
     this.appendDiagnostic(
       `Key：${this.plugin.unlockedApiKey ? "已解锁" : "未解锁（请先点「仅解锁」）"}`,
     );
+
+    const key = this.plugin.unlockedApiKey;
+    if (key) {
+      this.appendDiagnostic(`Key 类型：${describeApiKeyKind(classifyApiKey(key))}`);
+      const mismatch = describeKeyEndpointMismatch(key, this.plugin.settings.baseUrl);
+      if (mismatch) this.appendDiagnostic(`⚠ ${mismatch}`);
+    }
 
     try {
       const result = await action();

@@ -546,6 +546,39 @@ function loadVoices(timeoutMs = 2e3) {
   });
 }
 
+// src/settings/key-format.ts
+function classifyApiKey(key) {
+  const trimmed = key.trim();
+  if (trimmed.startsWith("sk-sp-")) return "token-plan";
+  if (trimmed.startsWith("sk-")) return "standard";
+  return "unknown";
+}
+function describeApiKeyKind(kind) {
+  switch (kind) {
+    case "token-plan":
+      return "Token Plan \u578B\uFF08sk-sp- \u5F00\u5934\uFF09";
+    case "standard":
+      return "\u666E\u901A API Key \u578B\uFF08sk- \u5F00\u5934\uFF09";
+    default:
+      return "\u672A\u8BC6\u522B\u7684\u683C\u5F0F";
+  }
+}
+function describeKeyEndpointMismatch(key, baseUrl) {
+  const kind = classifyApiKey(key);
+  const isTokenPlanEndpoint = baseUrl.toLowerCase().includes("token-plan");
+  const isCompatibleEndpoint = baseUrl.toLowerCase().includes("compatible-mode");
+  if (kind === "token-plan" && !isTokenPlanEndpoint) {
+    return "\u5F53\u524D Key \u662F Token Plan \u578B\uFF08sk-sp-\uFF09\uFF0C\u4F46\u63A5\u5165\u5730\u5740\u4E0D\u662F Token Plan \u7AEF\u70B9\u3002Token Plan \u7684 Key \u4E0D\u80FD\u7528\u4E8E\u666E\u901A\u7AEF\u70B9\uFF0C\u670D\u52A1\u7AEF\u4F1A\u8FD4\u56DE InvalidApiKey\u3002";
+  }
+  if (kind === "standard" && isTokenPlanEndpoint) {
+    return "\u5F53\u524D Key \u662F\u666E\u901A\u578B\uFF08sk-\uFF09\uFF0C\u4F46\u63A5\u5165\u5730\u5740\u662F Token Plan \u7AEF\u70B9\u3002Token Plan \u7AEF\u70B9\u9700\u8981 sk-sp- \u5F00\u5934\u7684 Key\u3002";
+  }
+  if (kind === "token-plan" && isTokenPlanEndpoint && !isCompatibleEndpoint) {
+    return "Token Plan \u7AEF\u70B9\u7684\u6587\u6863\u5316\u8DEF\u5F84\u90FD\u5E26 /compatible-mode/v1\uFF0C\u5F53\u524D\u5730\u5740\u770B\u8D77\u6765\u7F3A\u5C11\u8FD9\u4E00\u6BB5\u3002";
+  }
+  return void 0;
+}
+
 // src/settings/store.ts
 var import_obsidian2 = require("obsidian");
 
@@ -855,6 +888,16 @@ var EchoReadSettingTab = class extends import_obsidian3.PluginSettingTab {
     element.setText(
       saved ? unlocked ? "\u72B6\u6001\uFF1A\u5DF2\u4FDD\u5B58\uFF0C\u4E14\u5F53\u524D\u5DF2\u89E3\u9501\u3002" : "\u72B6\u6001\uFF1A\u5DF2\u4FDD\u5B58\uFF0C\u4F46\u672A\u89E3\u9501 \u2014\u2014 \u8BF7\u586B\u5199\u53E3\u4EE4\u540E\u70B9\u300C\u4EC5\u89E3\u9501\u300D\u3002" : `\u72B6\u6001\uFF1A\u5C1A\u672A\u4FDD\u5B58\u3002\u8BE5\u6E20\u9053\u7684 Key \u4EE5 ${keyPrefixHint} \u5F00\u5934\u3002`
     );
+    const key = this.plugin.unlockedApiKey;
+    if (!key) return;
+    element.setText(
+      `${element.getText()} \u5F53\u524D Key \u7C7B\u578B\uFF1A${describeApiKeyKind(classifyApiKey(key))}\u3002`
+    );
+    const mismatch = describeKeyEndpointMismatch(key, this.plugin.settings.baseUrl);
+    if (mismatch) {
+      element.createEl("br");
+      element.createEl("strong", { text: `\u26A0 ${mismatch}` });
+    }
   }
   // ---------- 朗读 ----------
   renderSpeech() {
@@ -942,6 +985,12 @@ ${ids.join("\n")}`;
     this.appendDiagnostic(
       `Key\uFF1A${this.plugin.unlockedApiKey ? "\u5DF2\u89E3\u9501" : "\u672A\u89E3\u9501\uFF08\u8BF7\u5148\u70B9\u300C\u4EC5\u89E3\u9501\u300D\uFF09"}`
     );
+    const key = this.plugin.unlockedApiKey;
+    if (key) {
+      this.appendDiagnostic(`Key \u7C7B\u578B\uFF1A${describeApiKeyKind(classifyApiKey(key))}`);
+      const mismatch = describeKeyEndpointMismatch(key, this.plugin.settings.baseUrl);
+      if (mismatch) this.appendDiagnostic(`\u26A0 ${mismatch}`);
+    }
     try {
       const result = await action();
       this.appendDiagnostic("\u7ED3\u679C\uFF1A\u6210\u529F");
