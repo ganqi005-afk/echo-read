@@ -181,9 +181,10 @@ export class RecorderModal extends Modal {
   }
 
   private async transcribe(): Promise<void> {
-    const apiKey = this.plugin.unlockedApiKey;
-    if (!apiKey) {
-      new Notice("尚未解锁 API Key，请先到插件设置里解锁。");
+    const { asrKeyId, asrBaseUrl, asrModel, asrTransport } = this.plugin.settings;
+    const apiKey = this.plugin.unlockedKeys[asrKeyId];
+    if (!asrKeyId || !apiKey) {
+      new Notice("请先在插件设置里为「语音识别」绑定并解锁一把 Key。");
       return;
     }
     if (!this.wavBuffer) {
@@ -198,10 +199,10 @@ export class RecorderModal extends Modal {
     try {
       const text = await transcribeAudio(
         {
-          baseUrl: this.plugin.settings.baseUrl,
+          baseUrl: asrBaseUrl,
           apiKey,
-          model: this.plugin.settings.asrModel,
-          transport: this.plugin.settings.transport,
+          model: asrModel,
+          transport: asrTransport,
         },
         dataUri,
       );

@@ -6,8 +6,8 @@ import { DEFAULT_SETTINGS, mergeSettings, type EchoReadSettings } from "./settin
 export default class EchoReadPlugin extends Plugin {
   settings: EchoReadSettings = DEFAULT_SETTINGS;
 
-  /** 解密后的 API Key，只存在内存中（设计文档 15.3）。 */
-  unlockedApiKey: string | undefined;
+  /** 解锁后的 Key 明文，按 Key ID 索引，只存在内存中（设计文档 15.3）。 */
+  unlockedKeys: Record<string, string> = {};
 
   async onload(): Promise<void> {
     this.settings = mergeSettings(
