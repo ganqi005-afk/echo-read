@@ -76,17 +76,24 @@ export function parseQueueChecks(markdown: string): Map<string, boolean> {
 
 // 把上一份队列里的勾选结果应用到卡片上。
 //
-// 只处理**确实勾选过的**那些：没勾选可能只是还没看到。
-// 如果把没勾选一律判为"忘了"，所有来不及复习的卡片会被打回第一档 ——
-// 而写进队列的卡片本来就是当天到期的，所以"勾了 = 记得"才是可靠信号。
+// 三个分支，缺一不可：
+// - 在队列里且勾选 → 记得 → 进下一档
+// - 在队列里但没勾 → 忘了 → **重置到第一档**
+// - 不在队列里 → 它还没轮到，原样不动
+//
+// 第二条是间隔重复的核心。之前只做了第一条，结果是：
+// 一张反复读错的卡最后读对时会从第 6 档继续往前推，而不是重走曲线 ——
+// 那样"忘了"这个分支等于不存在，整个调度退化成单向递增。
 export function applyQueueChecks(
   cards: ReviewCard[],
   checks: Map<string, boolean>,
   today: Date,
 ): ReviewCard[] {
   return cards.map((card) => {
-    if (checks.get(card.id) !== true) return card;
-    const next = nextSchedule(card.step, true, today);
+    const remembered = checks.get(card.id);
+    if (remembered === undefined) return card;
+
+    const next = nextSchedule(card.step, remembered, today);
     return { ...card, step: next.step, due: next.due };
   });
 }
@@ -115,7 +122,8 @@ export function buildQueueFile(cards: ReviewCard[], today: Date): string {
     "",
     due.length === 0
       ? "今天没有到期的卡片。"
-      : `共 ${due.length} 张。**勾选表示「记得」**，会推进到下一档；没勾的保持原档位。`,
+      : `共 ${due.length} 张。**勾选表示「记得」**，推进到下一档；` +
+        `**没勾表示「忘了」**，下一轮会重走整条曲线。`,
     "",
   ];
 

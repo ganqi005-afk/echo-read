@@ -150,14 +150,17 @@ describe("勾选回读", () => {
     expect(updated[1].step).toBe(0);
   });
 
-  // 把没勾选一律判为"忘了"，会把所有来不及复习的卡片打回第一档
-  it("leaves an unchecked card exactly as it was", () => {
+  // 没勾 = 忘了 → 重置。这是间隔重复的核心：忘掉的卡必须重走整条曲线，
+  // 否则"反复读错的卡最后读对时从第 6 档继续往前推"，调度就退化成单向递增了。
+  it("resets an unchecked card to the first step", () => {
     const cards = [card({ id: "b", step: 3, due: "2026-09-01" })];
     const updated = applyQueueChecks(cards, new Map([["b", false]]), TODAY);
-    expect(updated[0]).toEqual(cards[0]);
+    expect(updated[0].step).toBe(0);
+    expect(updated[0].due).toBe("2026-10-05");
   });
 
-  it("ignores cards that were not in the queue at all", () => {
+  // 不在队列里 = 还没轮到它，不能因为"没勾"就重置
+  it("leaves cards that were not in the queue untouched", () => {
     const cards = [card({ id: "zzz", step: 2 })];
     expect(applyQueueChecks(cards, new Map(), TODAY)[0].step).toBe(2);
   });

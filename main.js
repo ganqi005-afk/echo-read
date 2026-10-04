@@ -2024,8 +2024,9 @@ function parseQueueChecks(markdown) {
 }
 function applyQueueChecks(cards, checks, today) {
   return cards.map((card) => {
-    if (checks.get(card.id) !== true) return card;
-    const next = nextSchedule(card.step, true, today);
+    const remembered = checks.get(card.id);
+    if (remembered === void 0) return card;
+    const next = nextSchedule(card.step, remembered, today);
     return { ...card, step: next.step, due: next.due };
   });
 }
@@ -2046,7 +2047,7 @@ function buildQueueFile(cards, today) {
   const lines = [
     `# 今日复习 · ${toDateString(today)}`,
     "",
-    due.length === 0 ? "今天没有到期的卡片。" : `共 ${due.length} 张。**勾选表示「记得」**，会推进到下一档；没勾的保持原档位。`,
+    due.length === 0 ? "今天没有到期的卡片。" : `共 ${due.length} 张。**勾选表示「记得」**，推进到下一档；**没勾表示「忘了」**，下一轮会重走整条曲线。`,
     ""
   ];
   for (const card of due) {
@@ -3339,7 +3340,7 @@ ${ids.join("\n")}`;
   }
   async runWithDiagnostics(button, idleLabel, busyLabel, context, action) {
     this.diagnosticLines = [];
-    this.appendDiagnostic(`构建时间：${"2026-10-04T11:27:33.376Z"}`);
+    this.appendDiagnostic(`构建时间：${"2026-10-04T11:28:52.696Z"}`);
     this.appendDiagnostic(`时间：${(/* @__PURE__ */ new Date()).toLocaleString()}`);
     for (const line of context) this.appendDiagnostic(line);
     try {
