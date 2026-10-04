@@ -5,6 +5,7 @@ import { diffDictation } from "./core/diff";
 import { encodeWav } from "./core/wav";
 import { scoreAttempt } from "./scoring/attempt";
 import { transcribeAudio } from "./speech/client";
+import { saveTestSample } from "./store/sample";
 import type EchoReadPlugin from "./main";
 
 /**
@@ -28,6 +29,7 @@ export class RecorderModal extends Modal {
   private recordButton!: HTMLButtonElement;
   private playButton!: HTMLButtonElement;
   private transcribeButton!: HTMLButtonElement;
+  private saveSampleButton!: HTMLButtonElement;
   private referenceInput!: HTMLInputElement;
 
   constructor(app: App, plugin: EchoReadPlugin) {
@@ -55,12 +57,15 @@ export class RecorderModal extends Modal {
     this.recordButton = buttons.createEl("button", { text: "开始录音" });
     this.playButton = buttons.createEl("button", { text: "播放录音" });
     this.transcribeButton = buttons.createEl("button", { text: "转写并评分" });
+    this.saveSampleButton = buttons.createEl("button", { text: "存为测试音频" });
     this.playButton.disabled = true;
     this.transcribeButton.disabled = true;
+    this.saveSampleButton.disabled = true;
 
     this.recordButton.addEventListener("click", () => void this.toggleRecording());
     this.playButton.addEventListener("click", () => void this.playback());
     this.transcribeButton.addEventListener("click", () => void this.transcribe());
+    this.saveSampleButton.addEventListener("click", () => void this.saveAsTestSample());
 
     new Setting(contentEl)
       .setName("参考文本（可选）")
@@ -112,6 +117,7 @@ export class RecorderModal extends Modal {
     this.recordButton.setText("停止录音");
     this.playButton.disabled = true;
     this.transcribeButton.disabled = true;
+    this.saveSampleButton.disabled = true;
     this.setResult("");
     this.tick();
     this.timerId = window.setInterval(() => this.tick(), 200);
@@ -143,6 +149,7 @@ export class RecorderModal extends Modal {
     this.recordButton.setText("开始录音");
     this.playButton.disabled = false;
     this.transcribeButton.disabled = false;
+    this.saveSampleButton.disabled = false;
 
     const seconds = ((this.recording?.durationMs ?? 0) / 1000).toFixed(1);
     const samples = this.recording?.samples.length ?? 0;
@@ -160,6 +167,16 @@ export class RecorderModal extends Modal {
     } catch (error) {
       URL.revokeObjectURL(url);
       new Notice(`播放失败：${messageOf(error)}`);
+    }
+  }
+
+  private async saveAsTestSample(): Promise<void> {
+    if (!this.wavBuffer) return;
+    try {
+      await saveTestSample(this.app, this.wavBuffer);
+      new Notice("已存为测试音频。插件设置里的「测试连接」以后会用它，不再用静音。");
+    } catch (error) {
+      new Notice(`保存失败：${messageOf(error)}`);
     }
   }
 

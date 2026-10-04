@@ -9,3 +9,4 @@ node_modules/
 _lingo/audio/
 _lingo/recordings/
 _lingo/secrets.json
+_lingo/test-sample.wav

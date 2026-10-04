@@ -12,6 +12,7 @@ import {
 import { describeProbeOutcome } from "../speech/key-probe";
 import { loadVoices } from "../speech/tts-system";
 import type EchoReadPlugin from "../main";
+import { deleteTestSample, hasTestSample, loadTestSample } from "../store/sample";
 import {
   classifyApiKey,
   describeApiKeyKind,
@@ -295,8 +296,8 @@ export class EchoReadSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("测试连接")
       .setDesc(
-        "发送 1.5 秒静音音频做一次真实识别请求。用静音是因为不需要麦克风，" +
-          "但它也可能被服务端判为「没有语音」——那种失败不代表配置有问题。",
+        "发送一段音频做一次真实识别请求。默认用静音，但静音可能被判为「没有语音」，" +
+          "那种失败与配置无关 —— 建议先在录音工作台录一句英文并存为测试音频。",
       )
       .addButton((button) =>
         button.setButtonText("开始测试").onClick(async () => {
@@ -307,6 +308,16 @@ export class EchoReadSettingTab extends PluginSettingTab {
           );
         }),
       );
+
+    const sampleSetting = new Setting(containerEl).setName("测试音频").setDesc("检查中…");
+    void this.refreshSampleDescription(sampleSetting);
+    sampleSetting.addButton((button) =>
+      button.setButtonText("清除").onClick(async () => {
+        await deleteTestSample(this.app);
+        new Notice("已清除测试音频。");
+        this.display();
+      }),
+    );
 
     new Setting(containerEl)
       .setName("列出可用模型")
@@ -411,17 +422,30 @@ export class EchoReadSettingTab extends PluginSettingTab {
     this.diagnosticEl?.setText(this.diagnosticLines.join("\n"));
   }
 
+  private async refreshSampleDescription(setting: { setDesc(value: string): unknown }): Promise<void> {
+    const exists = await hasTestSample(this.app);
+    setting.setDesc(
+      exists
+        ? "已保存一段真实录音，「测试连接」会用它而不是静音。"
+        : "尚未保存。在录音工作台录一句英文并点「存为测试音频」，测试结果才有参考价值。",
+    );
+  }
+
   private async runConnectionTest(): Promise<string> {
     const apiKey = this.plugin.unlockedApiKey;
     if (!apiKey) throw new Error("尚未解锁 API Key。");
     if (!this.plugin.settings.baseUrl) throw new Error("尚未填写接入地址。");
 
-    const silence = new Float32Array(16000 * 1.5);
-    const wav = encodeWav(silence, 16000);
+    const saved = await loadTestSample(this.app);
+    const wav = saved ?? encodeWav(new Float32Array(16000 * 1.5), 16000);
     const dataUri = bytesToDataUri(new Uint8Array(wav), "audio/wav");
 
     this.appendDiagnostic(`请求地址：${buildEndpoint(this.plugin.settings.baseUrl, this.plugin.settings.transport)}`);
-    this.appendDiagnostic(`音频：1.5 秒静音 WAV，base64 后 ${Math.round(dataUri.length / 1024)} KB`);
+    this.appendDiagnostic(
+      saved
+        ? `音频：已保存的真实录音，base64 后 ${Math.round(dataUri.length / 1024)} KB`
+        : `音频：1.5 秒静音（可能被判为「没有语音」，建议改为真实录音），base64 后 ${Math.round(dataUri.length / 1024)} KB`,
+    );
     this.appendDiagnostic(
       `请求体预览：\n${previewRequestBody(
         {

@@ -555,6 +555,27 @@ function truncate(text, limit = 600) {
   return text.length > limit ? `${text.slice(0, limit)}…` : text;
 }
 
+// src/store/sample.ts
+var TEST_SAMPLE_PATH = "_lingo/test-sample.wav";
+var TEST_SAMPLE_DIR = "_lingo";
+async function hasTestSample(app) {
+  return app.vault.adapter.exists(TEST_SAMPLE_PATH);
+}
+async function saveTestSample(app, wav) {
+  const adapter = app.vault.adapter;
+  if (!await adapter.exists(TEST_SAMPLE_DIR)) await adapter.mkdir(TEST_SAMPLE_DIR);
+  await adapter.writeBinary(TEST_SAMPLE_PATH, wav);
+}
+async function loadTestSample(app) {
+  const adapter = app.vault.adapter;
+  if (!await adapter.exists(TEST_SAMPLE_PATH)) return void 0;
+  return adapter.readBinary(TEST_SAMPLE_PATH);
+}
+async function deleteTestSample(app) {
+  const adapter = app.vault.adapter;
+  if (await adapter.exists(TEST_SAMPLE_PATH)) await adapter.remove(TEST_SAMPLE_PATH);
+}
+
 // src/recorder-modal.ts
 var RecorderModal = class extends import_obsidian2.Modal {
   plugin;
@@ -568,6 +589,7 @@ var RecorderModal = class extends import_obsidian2.Modal {
   recordButton;
   playButton;
   transcribeButton;
+  saveSampleButton;
   referenceInput;
   constructor(app, plugin) {
     super(app);
@@ -590,11 +612,14 @@ var RecorderModal = class extends import_obsidian2.Modal {
     this.recordButton = buttons.createEl("button", { text: "开始录音" });
     this.playButton = buttons.createEl("button", { text: "播放录音" });
     this.transcribeButton = buttons.createEl("button", { text: "转写并评分" });
+    this.saveSampleButton = buttons.createEl("button", { text: "存为测试音频" });
     this.playButton.disabled = true;
     this.transcribeButton.disabled = true;
+    this.saveSampleButton.disabled = true;
     this.recordButton.addEventListener("click", () => void this.toggleRecording());
     this.playButton.addEventListener("click", () => void this.playback());
     this.transcribeButton.addEventListener("click", () => void this.transcribe());
+    this.saveSampleButton.addEventListener("click", () => void this.saveAsTestSample());
     new import_obsidian2.Setting(contentEl).setName("参考文本（可选）").setDesc("填上原句，转写后会同时给出准确度、完整度、流利度与总分。").addText((text) => {
       this.referenceInput = text.inputEl;
       text.setPlaceholder("The plan is ready.");
@@ -637,6 +662,7 @@ var RecorderModal = class extends import_obsidian2.Modal {
     this.recordButton.setText("停止录音");
     this.playButton.disabled = true;
     this.transcribeButton.disabled = true;
+    this.saveSampleButton.disabled = true;
     this.setResult("");
     this.tick();
     this.timerId = window.setInterval(() => this.tick(), 200);
@@ -663,6 +689,7 @@ var RecorderModal = class extends import_obsidian2.Modal {
     this.recordButton.setText("开始录音");
     this.playButton.disabled = false;
     this.transcribeButton.disabled = false;
+    this.saveSampleButton.disabled = false;
     const seconds = ((this.recording?.durationMs ?? 0) / 1e3).toFixed(1);
     const samples = this.recording?.samples.length ?? 0;
     const kb = Math.round((this.wavBuffer?.byteLength ?? 0) / 1024);
@@ -678,6 +705,15 @@ var RecorderModal = class extends import_obsidian2.Modal {
     } catch (error) {
       URL.revokeObjectURL(url);
       new import_obsidian2.Notice(`播放失败：${messageOf(error)}`);
+    }
+  }
+  async saveAsTestSample() {
+    if (!this.wavBuffer) return;
+    try {
+      await saveTestSample(this.app, this.wavBuffer);
+      new import_obsidian2.Notice("已存为测试音频。插件设置里的「测试连接」以后会用它，不再用静音。");
+    } catch (error) {
+      new import_obsidian2.Notice(`保存失败：${messageOf(error)}`);
     }
   }
   async transcribe() {
@@ -1145,7 +1181,7 @@ var EchoReadSettingTab = class extends import_obsidian4.PluginSettingTab {
       cls: "setting-item-description"
     });
     new import_obsidian4.Setting(containerEl).setName("测试连接").setDesc(
-      "发送 1.5 秒静音音频做一次真实识别请求。用静音是因为不需要麦克风，但它也可能被服务端判为「没有语音」——那种失败不代表配置有问题。"
+      "发送一段音频做一次真实识别请求。默认用静音，但静音可能被判为「没有语音」，那种失败与配置无关 —— 建议先在录音工作台录一句英文并存为测试音频。"
     ).addButton(
       (button) => button.setButtonText("开始测试").onClick(async () => {
         button.setDisabled(true);
@@ -1156,6 +1192,15 @@ var EchoReadSettingTab = class extends import_obsidian4.PluginSettingTab {
           "测试中…",
           () => this.runConnectionTest()
         );
+      })
+    );
+    const sampleSetting = new import_obsidian4.Setting(containerEl).setName("测试音频").setDesc("检查中…");
+    void this.refreshSampleDescription(sampleSetting);
+    sampleSetting.addButton(
+      (button) => button.setButtonText("清除").onClick(async () => {
+        await deleteTestSample(this.app);
+        new import_obsidian4.Notice("已清除测试音频。");
+        this.display();
       })
     );
     new import_obsidian4.Setting(containerEl).setName("列出可用模型").setDesc(
@@ -1207,7 +1252,7 @@ ${ids.join("\n")}`;
   }
   async runWithDiagnostics(button, idleLabel, busyLabel, action) {
     this.diagnosticLines = [];
-    this.appendDiagnostic(`构建时间：${"2026-10-04T04:58:22.535Z"}`);
+    this.appendDiagnostic(`构建时间：${"2026-10-04T05:00:18.043Z"}`);
     this.appendDiagnostic(`时间：${(/* @__PURE__ */ new Date()).toLocaleString()}`);
     this.appendDiagnostic(`协议：${this.plugin.settings.transport}`);
     this.appendDiagnostic(`模型：${this.plugin.settings.asrModel}`);
@@ -1238,15 +1283,23 @@ ${ids.join("\n")}`;
     this.diagnosticLines.push(line);
     this.diagnosticEl?.setText(this.diagnosticLines.join("\n"));
   }
+  async refreshSampleDescription(setting) {
+    const exists = await hasTestSample(this.app);
+    setting.setDesc(
+      exists ? "已保存一段真实录音，「测试连接」会用它而不是静音。" : "尚未保存。在录音工作台录一句英文并点「存为测试音频」，测试结果才有参考价值。"
+    );
+  }
   async runConnectionTest() {
     const apiKey = this.plugin.unlockedApiKey;
     if (!apiKey) throw new Error("尚未解锁 API Key。");
     if (!this.plugin.settings.baseUrl) throw new Error("尚未填写接入地址。");
-    const silence = new Float32Array(16e3 * 1.5);
-    const wav = encodeWav(silence, 16e3);
+    const saved = await loadTestSample(this.app);
+    const wav = saved ?? encodeWav(new Float32Array(16e3 * 1.5), 16e3);
     const dataUri = bytesToDataUri(new Uint8Array(wav), "audio/wav");
     this.appendDiagnostic(`请求地址：${buildEndpoint(this.plugin.settings.baseUrl, this.plugin.settings.transport)}`);
-    this.appendDiagnostic(`音频：1.5 秒静音 WAV，base64 后 ${Math.round(dataUri.length / 1024)} KB`);
+    this.appendDiagnostic(
+      saved ? `音频：已保存的真实录音，base64 后 ${Math.round(dataUri.length / 1024)} KB` : `音频：1.5 秒静音（可能被判为「没有语音」，建议改为真实录音），base64 后 ${Math.round(dataUri.length / 1024)} KB`
+    );
     this.appendDiagnostic(
       `请求体预览：
 ${previewRequestBody(
