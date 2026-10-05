@@ -56,8 +56,14 @@ export class AskModal extends Modal {
     contentEl.addClass("echo-read-ask");
     contentEl.createEl("h3", { text: "问 AI", cls: "echo-read-ask-title" });
 
+    // 把收到的内容和字符数都显出来 —— 内容有没有传进来一眼就能看见，
+    // 不必靠猜（"是没选中，还是模型没读到"这种问题最费时间）
+    contentEl.createDiv({
+      cls: "echo-read-ask-label",
+      text: `选中的文本（${this.selection.length} 字符）`,
+    });
     const quote = contentEl.createDiv({ cls: "echo-read-ask-quote" });
-    quote.setText(this.selection);
+    quote.setText(this.selection.trim() === "" ? "（空）" : this.selection);
 
     // 快捷操作：这两件事有固定流程，与下面的自由提问区分开 ——
     // 混进问题列表会让人以为它们也只是随口问一句。
@@ -196,6 +202,8 @@ export class AskModal extends Modal {
         question: trimmed,
       });
       this.finish(answer);
+      // 明确回报这次到底发出去了多少内容 —— 失败时这是最有用的一条线索
+      this.setStatus(`已发送：选中文本 ${this.selection.length} 字符　+　问题 ${trimmed.length} 字符`);
     } catch (error) {
       this.fail(error);
     }

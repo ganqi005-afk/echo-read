@@ -47,6 +47,14 @@ export class ReadingController {
   private playingText = "";
   /** 每次发起朗读递增。被打断的那次靠它判断"结果已作废"，不再回写状态。 */
   private speakGeneration = 0;
+  /**
+   * 最近一次由「点句」处理目标的时间。
+   *
+   * mouseup 里排队的选区检查会在 click 之后才跑。触屏上点一句往往**不会**
+   * 收起已有选区，于是那次延迟检查会把刚点中的句子又覆盖成旧选区。
+   * 用时间戳挡住这个覆盖窗口。
+   */
+  private lastClickHandledAt = 0;
 
   private bar: HTMLElement | null = null;
   private statusEl: HTMLElement | null = null;
@@ -137,8 +145,9 @@ export class ReadingController {
     // 操作条自己的点击不参与选句判定，否则点「听原句」会先把操作条关掉
     if (this.bar && this.bar.contains(target)) return;
 
-    // 有文本被选中时，选中的内容优先 —— 单击不应该把它覆盖成整句
-    if (this.hasLiveSelection()) return;
+    // 有文本被选中时，选中的内容优先 —— 但只对**落在选区之内**的点击成立。
+    // 触屏上选区常常不会自动收起，一律拦截会导致点了另一句毫无反应。
+    if (this.hasLiveSelection() && this.isTargetInsideSelection(target)) return;
 
     // 链接优先：点在链接上应正常跳转，不抢它的行为
     if (target.closest("a")) return;
@@ -154,6 +163,7 @@ export class ReadingController {
 
     this.prepareForNewTarget();
     this.selectSentence(index, span);
+    this.lastClickHandledAt = Date.now();
 
     // 一步到位：选中的同时就读出来
     if (this.plugin.settings.speakOnClick) void this.speak();
@@ -276,6 +286,9 @@ export class ReadingController {
    * 以及标题、列表、表格这类不会被装饰成句子 span 的地方。
    */
   private handleSelection(): void {
+    // 刚由「点句」定过目标：这次的延迟选区检查作废，别把它覆盖回去
+    if (Date.now() - this.lastClickHandledAt < 150) return;
+
     const selection = window.getSelection();
     if (!selection || selection.isCollapsed || selection.rangeCount === 0) return;
 
@@ -295,6 +308,16 @@ export class ReadingController {
   private hasLiveSelection(): boolean {
     const selection = window.getSelection();
     return selection !== null && !selection.isCollapsed && selection.toString().trim() !== "";
+  }
+
+  private isTargetInsideSelection(target: HTMLElement): boolean {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) return false;
+    try {
+      return selection.getRangeAt(0).intersectsNode(target);
+    } catch {
+      return false;
+    }
   }
 
   private isInsideBar(range: Range): boolean {
@@ -331,7 +354,11 @@ export class ReadingController {
     bar.createEl("button", { text: "听原句" }).addEventListener("click", () => void this.speak());
 
     bar.createEl("button", { text: "提问" }).addEventListener("click", () => {
-      if (this.currentText.trim() === "") return;
+      // 空目标时明说，而不是打开一个空白面板让人以为模型没读到内容
+      if (this.currentText.trim() === "") {
+        new Notice("请先点一句，或选中一段文字，再点「提问」。");
+        return;
+      }
       new AskModal(this.app, this.plugin, {
         selection: this.currentText,
         sentence: this.enclosingSentence(),

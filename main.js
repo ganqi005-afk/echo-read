@@ -1342,8 +1342,12 @@ var AskModal = class extends import_obsidian4.Modal {
     const { contentEl } = this;
     contentEl.addClass("echo-read-ask");
     contentEl.createEl("h3", { text: "问 AI", cls: "echo-read-ask-title" });
+    contentEl.createDiv({
+      cls: "echo-read-ask-label",
+      text: `选中的文本（${this.selection.length} 字符）`
+    });
     const quote = contentEl.createDiv({ cls: "echo-read-ask-quote" });
-    quote.setText(this.selection);
+    quote.setText(this.selection.trim() === "" ? "（空）" : this.selection);
     contentEl.createDiv({ cls: "echo-read-ask-label", text: "快捷操作" });
     const actions = contentEl.createDiv({ cls: "echo-read-ask-actions" });
     const etymology = actions.createEl("button", {
@@ -1466,6 +1470,7 @@ ${trimmed}`);
         question: trimmed
       });
       this.finish(answer);
+      this.setStatus(`已发送：选中文本 ${this.selection.length} 字符　+　问题 ${trimmed.length} 字符`);
     } catch (error) {
       this.fail(error);
     }
@@ -2312,6 +2317,14 @@ var ReadingController = class {
   playingText = "";
   /** 每次发起朗读递增。被打断的那次靠它判断"结果已作废"，不再回写状态。 */
   speakGeneration = 0;
+  /**
+   * 最近一次由「点句」处理目标的时间。
+   *
+   * mouseup 里排队的选区检查会在 click 之后才跑。触屏上点一句往往**不会**
+   * 收起已有选区，于是那次延迟检查会把刚点中的句子又覆盖成旧选区。
+   * 用时间戳挡住这个覆盖窗口。
+   */
+  lastClickHandledAt = 0;
   bar = null;
   statusEl = null;
   resultEl = null;
@@ -2382,7 +2395,7 @@ var ReadingController = class {
     const target = event.target;
     if (!(target instanceof HTMLElement)) return;
     if (this.bar && this.bar.contains(target)) return;
-    if (this.hasLiveSelection()) return;
+    if (this.hasLiveSelection() && this.isTargetInsideSelection(target)) return;
     if (target.closest("a")) return;
     const span = target.closest(`[${SENTENCE_ATTR}]`);
     if (!(span instanceof HTMLElement)) {
@@ -2393,6 +2406,7 @@ var ReadingController = class {
     if (!Number.isFinite(index)) return;
     this.prepareForNewTarget();
     this.selectSentence(index, span);
+    this.lastClickHandledAt = Date.now();
     if (this.plugin.settings.speakOnClick) void this.speak();
   }
   /**
@@ -2493,6 +2507,7 @@ var ReadingController = class {
    * 以及标题、列表、表格这类不会被装饰成句子 span 的地方。
    */
   handleSelection() {
+    if (Date.now() - this.lastClickHandledAt < 150) return;
     const selection = window.getSelection();
     if (!selection || selection.isCollapsed || selection.rangeCount === 0) return;
     const text = selection.toString().trim();
@@ -2508,6 +2523,15 @@ var ReadingController = class {
   hasLiveSelection() {
     const selection = window.getSelection();
     return selection !== null && !selection.isCollapsed && selection.toString().trim() !== "";
+  }
+  isTargetInsideSelection(target) {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) return false;
+    try {
+      return selection.getRangeAt(0).intersectsNode(target);
+    } catch {
+      return false;
+    }
   }
   isInsideBar(range) {
     if (!this.bar) return false;
@@ -2535,7 +2559,10 @@ var ReadingController = class {
     const bar = document.body.createDiv({ cls: "echo-read-bar" });
     bar.createEl("button", { text: "听原句" }).addEventListener("click", () => void this.speak());
     bar.createEl("button", { text: "提问" }).addEventListener("click", () => {
-      if (this.currentText.trim() === "") return;
+      if (this.currentText.trim() === "") {
+        new import_obsidian6.Notice("请先点一句，或选中一段文字，再点「提问」。");
+        return;
+      }
       new AskModal(this.app, this.plugin, {
         selection: this.currentText,
         sentence: this.enclosingSentence()
@@ -3590,7 +3617,7 @@ ${ids.join("\n")}`;
   }
   async runWithDiagnostics(button, idleLabel, busyLabel, context, action) {
     this.diagnosticLines = [];
-    this.appendDiagnostic(`构建时间：${"2026-10-05T13:10:35.484Z"}`);
+    this.appendDiagnostic(`构建时间：${"2026-10-05T13:16:27.662Z"}`);
     this.appendDiagnostic(`时间：${(/* @__PURE__ */ new Date()).toLocaleString()}`);
     for (const line of context) this.appendDiagnostic(line);
     try {
