@@ -14,3 +14,6 @@ _lingo/audio/
 _lingo/recordings/
 _lingo/keys.json
 _lingo/test-sample.wav
+
+# 本地 RAG 学习沙盒（独立实验，不进插件仓库）
+rag-lab/

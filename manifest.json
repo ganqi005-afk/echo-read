@@ -1,7 +1,7 @@
 {
   "id": "echo-read",
   "name": "Echo Read",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "minAppVersion": "1.13.7",
   "description": "Read English in Obsidian: tap a sentence to hear it, practice pronunciation, and keep the words you miss in spaced review.",
   "author": "GanQi",

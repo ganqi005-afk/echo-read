@@ -42,7 +42,16 @@ export function speak(text: string, options: SpeakOptions = {}): Promise<void> {
     }
 
     utterance.onend = () => resolve();
-    utterance.onerror = () => reject(new Error("系统语音朗读失败。"));
+    utterance.onerror = (event) => {
+      // 被 cancel() 打断时浏览器报的是 interrupted / canceled。
+      // 那是我们主动停的，当成成功结束处理 —— 否则每次切换句子都会弹一个假错误。
+      const reason = (event as SpeechSynthesisErrorEvent).error;
+      if (reason === "interrupted" || reason === "canceled") {
+        resolve();
+        return;
+      }
+      reject(new Error(`系统语音朗读失败（${reason}）。`));
+    };
 
     speechSynthesis.cancel();
     speechSynthesis.speak(utterance);
@@ -51,4 +60,8 @@ export function speak(text: string, options: SpeakOptions = {}): Promise<void> {
 
 export function stopSpeaking(): void {
   if (typeof speechSynthesis !== "undefined") speechSynthesis.cancel();
+}
+
+export function isSpeaking(): boolean {
+  return typeof speechSynthesis !== "undefined" && speechSynthesis.speaking;
 }

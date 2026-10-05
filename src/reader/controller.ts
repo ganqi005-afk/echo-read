@@ -1,5 +1,5 @@
 import { App, Notice } from "obsidian";
-import { playAudioBytes, stopPlayback } from "../audio/playback";
+import { isAudioPlaying, playAudioBytes, stopAudioPlayback } from "../audio/playback";
 import { Recorder } from "../audio/recorder";
 import { bytesToDataUri } from "../core/base64";
 import { diffDictation } from "../core/diff";
@@ -10,7 +10,7 @@ import { requestPracticeFeedback } from "../llm/client";
 import type { PracticeContext } from "../llm/prompt";
 import { AskModal } from "./ask-modal";
 import { transcribeAudio } from "../speech/client";
-import { stopSpeaking } from "../speech/tts-system";
+import { isSpeaking, stopSpeaking } from "../speech/tts-system";
 import { speakSentence } from "./actions";
 import {
   CURRENT_CLASS,
@@ -43,6 +43,10 @@ export class ReadingController {
   /** 拖选出来的目标。用克隆的 Range 而不是缓存矩形，滚动后重新取仍然准确。 */
   private currentRange: Range | null = null;
   private currentText = "";
+  /** 正在朗读的文本。用于同一句的互斥 —— 正在播就不再插一遍。 */
+  private playingText = "";
+  /** 每次发起朗读递增。被打断的那次靠它判断"结果已作废"，不再回写状态。 */
+  private speakGeneration = 0;
 
   private bar: HTMLElement | null = null;
   private statusEl: HTMLElement | null = null;
@@ -237,8 +241,9 @@ export class ReadingController {
     this.currentRange = null;
     this.currentText = "";
     this.forgetRecording();
+    this.invalidateSpeech();
     stopSpeaking();
-    stopPlayback();
+    stopAudioPlayback();
     if (this.bar) this.bar.style.display = "none";
   }
 
@@ -352,8 +357,9 @@ export class ReadingController {
     bar.createEl("button", { text: "停止" }).addEventListener("click", () => {
       this.stopContinuous();
       this.cancelRecording();
+      this.invalidateSpeech();
       stopSpeaking();
-      stopPlayback();
+      stopAudioPlayback();
       this.setStatus("已停止");
     });
 
@@ -435,11 +441,28 @@ export class ReadingController {
   // ---------------- 听原句（把文本发给模型，拿回语音） ----------------
 
   private async speak(): Promise<void> {
-    if (!this.currentText.trim()) return;
+    const text = this.currentText.trim();
+    if (!text) return;
+
+    // 互斥：同一句正在播时再点不重播 —— 否则会叠成两遍。
+    // 想中断就点「停止」，或者直接点另一句（那句会打断这句）。
+    if (this.playingText === text && (isSpeaking() || isAudioPlaying())) {
+      this.setStatus("正在播放中　·　点「停止」可中断");
+      return;
+    }
+
+    // 递增代号：这次朗读之后若又被发起或被打断，代号就对不上了
+    const generation = ++this.speakGeneration;
+    this.playingText = text;
     this.setResult("");
     this.setStatus("合成中…");
+
     try {
-      const source = await speakSentence(this.app, this.plugin, this.currentText);
+      const source = await speakSentence(this.app, this.plugin, text);
+
+      // 已经被别的句子或「停止」取代 —— 不要回来乱改状态
+      if (generation !== this.speakGeneration) return;
+
       this.setStatus(
         source === "cache"
           ? "已播放（命中缓存，未计费）"
@@ -454,8 +477,17 @@ export class ReadingController {
         void this.markCached(document);
       }
     } catch (error) {
+      if (generation !== this.speakGeneration) return;
       this.reportFailure("朗读", error);
+    } finally {
+      if (generation === this.speakGeneration) this.playingText = "";
     }
+  }
+
+  /** 让所有在途的朗读结果失效，避免被打断的那次回来改状态。 */
+  private invalidateSpeech(): void {
+    this.speakGeneration++;
+    this.playingText = "";
   }
 
   // ---------------- 连续朗读 ----------------
@@ -501,7 +533,7 @@ export class ReadingController {
     if (!this.continuous) return;
     this.continuous = false;
     stopSpeaking();
-    stopPlayback();
+    stopAudioPlayback();
     this.updateContinuousButton();
   }
 

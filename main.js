@@ -777,39 +777,37 @@ function messageOf(error) {
 var import_obsidian6 = require("obsidian");
 
 // src/audio/playback.ts
-var current = null;
+var playing = null;
+function isAudioPlaying() {
+  return playing !== null;
+}
+function stopAudioPlayback() {
+  const current = playing;
+  playing = null;
+  if (!current) return;
+  current.audio.pause();
+  URL.revokeObjectURL(current.url);
+  current.resolve();
+}
 async function playAudioBytes(bytes, mimeType) {
+  stopAudioPlayback();
   const url = URL.createObjectURL(new Blob([bytes], { type: mimeType }));
   const audio = new Audio(url);
-  current = audio;
-  try {
-    await new Promise((resolve, reject) => {
-      const cleanup = () => {
-        URL.revokeObjectURL(url);
-        if (current === audio) current = null;
-      };
-      audio.addEventListener("ended", () => {
-        cleanup();
-        resolve();
-      });
-      audio.addEventListener("error", () => {
-        cleanup();
-        reject(new Error("音频播放失败。"));
-      });
-      audio.play().catch((error) => {
-        cleanup();
-        reject(error);
-      });
-    });
-  } catch (error) {
-    if (current === audio) current = null;
-    throw error;
-  }
-}
-function stopPlayback() {
-  if (!current) return;
-  current.pause();
-  current = null;
+  await new Promise((resolve, reject) => {
+    let settled = false;
+    const settle = (error) => {
+      if (settled) return;
+      settled = true;
+      if (playing?.audio === audio) playing = null;
+      URL.revokeObjectURL(url);
+      if (error) reject(error);
+      else resolve();
+    };
+    playing = { audio, url, resolve: () => settle() };
+    audio.addEventListener("ended", () => settle());
+    audio.addEventListener("error", () => settle(new Error("音频播放失败。")));
+    audio.play().catch((error) => settle(error instanceof Error ? error : new Error(String(error))));
+  });
 }
 
 // src/llm/client.ts
@@ -1549,13 +1547,23 @@ function speak(text, options = {}) {
       if (voice) utterance.voice = voice;
     }
     utterance.onend = () => resolve();
-    utterance.onerror = () => reject(new Error("系统语音朗读失败。"));
+    utterance.onerror = (event) => {
+      const reason = event.error;
+      if (reason === "interrupted" || reason === "canceled") {
+        resolve();
+        return;
+      }
+      reject(new Error(`系统语音朗读失败（${reason}）。`));
+    };
     speechSynthesis.cancel();
     speechSynthesis.speak(utterance);
   });
 }
 function stopSpeaking() {
   if (typeof speechSynthesis !== "undefined") speechSynthesis.cancel();
+}
+function isSpeaking() {
+  return typeof speechSynthesis !== "undefined" && speechSynthesis.speaking;
 }
 
 // src/speech/tts-request.ts
@@ -1883,10 +1891,10 @@ function joinPath(...parts) {
 async function ensureDir(adapter, dir) {
   if (dir === "" || await adapter.exists(dir)) return;
   const segments = dir.split("/");
-  let current2 = "";
+  let current = "";
   for (const segment of segments) {
-    current2 = current2 === "" ? segment : `${current2}/${segment}`;
-    if (!await adapter.exists(current2)) await adapter.mkdir(current2);
+    current = current === "" ? segment : `${current}/${segment}`;
+    if (!await adapter.exists(current)) await adapter.mkdir(current);
   }
 }
 function resolveAudioRoot(attachmentFolderPath, notePath) {
@@ -2254,25 +2262,25 @@ function assignOwners(nodes, ranges) {
     const length = node.nodeValue?.length ?? 0;
     const nodeEnd = offset + length;
     let cursor = offset;
-    let current2 = node;
+    let current = node;
     while (cursor < nodeEnd) {
       const index = ranges.findIndex((range) => cursor >= range.start && cursor < range.end);
       if (index < 0) {
         const next = ranges.find((range) => range.start > cursor);
         const stop = Math.min(next ? next.start : nodeEnd, nodeEnd);
         if (stop <= cursor) break;
-        current2 = current2.splitText(stop - cursor);
+        current = current.splitText(stop - cursor);
         cursor = stop;
         continue;
       }
       const boundary = ranges[index].end;
       if (boundary >= nodeEnd) {
-        owners.push({ node: current2, index });
+        owners.push({ node: current, index });
         break;
       }
-      const rest = current2.splitText(boundary - cursor);
-      owners.push({ node: current2, index });
-      current2 = rest;
+      const rest = current.splitText(boundary - cursor);
+      owners.push({ node: current, index });
+      current = rest;
       cursor = boundary;
     }
     offset = nodeEnd;
@@ -2300,6 +2308,10 @@ var ReadingController = class {
   /** 拖选出来的目标。用克隆的 Range 而不是缓存矩形，滚动后重新取仍然准确。 */
   currentRange = null;
   currentText = "";
+  /** 正在朗读的文本。用于同一句的互斥 —— 正在播就不再插一遍。 */
+  playingText = "";
+  /** 每次发起朗读递增。被打断的那次靠它判断"结果已作废"，不再回写状态。 */
+  speakGeneration = 0;
   bar = null;
   statusEl = null;
   resultEl = null;
@@ -2452,8 +2464,9 @@ var ReadingController = class {
     this.currentRange = null;
     this.currentText = "";
     this.forgetRecording();
+    this.invalidateSpeech();
     stopSpeaking();
-    stopPlayback();
+    stopAudioPlayback();
     if (this.bar) this.bar.style.display = "none";
   }
   /** 换一个操作对象时，上一段录音就没有意义了，丢掉以免误播。 */
@@ -2541,8 +2554,9 @@ var ReadingController = class {
     bar.createEl("button", { text: "停止" }).addEventListener("click", () => {
       this.stopContinuous();
       this.cancelRecording();
+      this.invalidateSpeech();
       stopSpeaking();
-      stopPlayback();
+      stopAudioPlayback();
       this.setStatus("已停止");
     });
     this.statusEl = bar.createDiv({ cls: "echo-read-bar-status" });
@@ -2608,11 +2622,19 @@ var ReadingController = class {
   }
   // ---------------- 听原句（把文本发给模型，拿回语音） ----------------
   async speak() {
-    if (!this.currentText.trim()) return;
+    const text = this.currentText.trim();
+    if (!text) return;
+    if (this.playingText === text && (isSpeaking() || isAudioPlaying())) {
+      this.setStatus("正在播放中　·　点「停止」可中断");
+      return;
+    }
+    const generation = ++this.speakGeneration;
+    this.playingText = text;
     this.setResult("");
     this.setStatus("合成中…");
     try {
-      const source = await speakSentence(this.app, this.plugin, this.currentText);
+      const source = await speakSentence(this.app, this.plugin, text);
+      if (generation !== this.speakGeneration) return;
       this.setStatus(
         source === "cache" ? "已播放（命中缓存，未计费）" : source === "cloud" ? "已播放（模型返回的语音，已缓存）" : "已播放（系统语音）"
       );
@@ -2621,8 +2643,16 @@ var ReadingController = class {
         void this.markCached(document);
       }
     } catch (error) {
+      if (generation !== this.speakGeneration) return;
       this.reportFailure("朗读", error);
+    } finally {
+      if (generation === this.speakGeneration) this.playingText = "";
     }
+  }
+  /** 让所有在途的朗读结果失效，避免被打断的那次回来改状态。 */
+  invalidateSpeech() {
+    this.speakGeneration++;
+    this.playingText = "";
   }
   // ---------------- 连续朗读 ----------------
   async toggleContinuous() {
@@ -2660,7 +2690,7 @@ var ReadingController = class {
     if (!this.continuous) return;
     this.continuous = false;
     stopSpeaking();
-    stopPlayback();
+    stopAudioPlayback();
     this.updateContinuousButton();
   }
   updateContinuousButton() {
@@ -2836,8 +2866,8 @@ var ReadingController = class {
   }
   /** 追加而不是覆盖：讲解要跟分数一起看，不能被冲掉。 */
   appendResult(text) {
-    const current2 = this.resultEl?.textContent ?? "";
-    this.setResult(current2.trim() === "" ? text : `${current2}
+    const current = this.resultEl?.textContent ?? "";
+    this.setResult(current.trim() === "" ? text : `${current}
 ${text}`);
   }
   dispose() {
@@ -3560,7 +3590,7 @@ ${ids.join("\n")}`;
   }
   async runWithDiagnostics(button, idleLabel, busyLabel, context, action) {
     this.diagnosticLines = [];
-    this.appendDiagnostic(`构建时间：${"2026-10-04T12:42:11.480Z"}`);
+    this.appendDiagnostic(`构建时间：${"2026-10-05T13:10:35.484Z"}`);
     this.appendDiagnostic(`时间：${(/* @__PURE__ */ new Date()).toLocaleString()}`);
     for (const line of context) this.appendDiagnostic(line);
     try {
