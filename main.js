@@ -2320,11 +2320,12 @@ var ReadingController = class {
   /**
    * 最近一次由「点句」处理目标的时间。
    *
-   * mouseup 里排队的选区检查会在 click 之后才跑。触屏上点一句往往**不会**
+   * 选区检查是防抖触发的，仍可能排在 click 之后。触屏上点一句往往**不会**
    * 收起已有选区，于是那次延迟检查会把刚点中的句子又覆盖成旧选区。
    * 用时间戳挡住这个覆盖窗口。
    */
   lastClickHandledAt = 0;
+  selectionTimer;
   bar = null;
   statusEl = null;
   resultEl = null;
@@ -2347,8 +2348,12 @@ var ReadingController = class {
       void this.markCached(element);
     });
     this.plugin.registerDomEvent(document, "click", (event) => this.onClick(event));
-    this.plugin.registerDomEvent(document, "mouseup", () => this.scheduleSelectionCheck());
-    this.plugin.registerDomEvent(document, "keyup", () => this.scheduleSelectionCheck());
+    this.plugin.registerDomEvent(
+      document,
+      "selectionchange",
+      () => this.scheduleSelectionCheck()
+    );
+    this.plugin.registerDomEvent(document, "touchend", () => this.scheduleSelectionCheck());
     this.plugin.registerDomEvent(document, "dblclick", (event) => this.onDoubleClick(event));
     this.plugin.registerDomEvent(window, "scroll", () => this.scheduleReposition(), true);
     this.plugin.registerDomEvent(window, "resize", () => this.scheduleReposition());
@@ -2415,8 +2420,9 @@ var ReadingController = class {
    * 与"拖选后手动点"的区别在于**意图**：双击是一个明确的手势 ——
    * "我想知道这个词怎么读"。而拖选经常只是为了复制，所以那里不自动发声。
    *
-   * 双击时浏览器会先选中该词，mouseup 处理器已经把操作对象设好了；
-   * 这里只负责补上"发声"这一步。
+   * 双击后浏览器会把那个词选中。操作对象必须是**那个词**，而不是它所在的整句 ——
+   * 双击的语义就是"我要知道这个词怎么读"。所以这里直接读选区，
+   * 既不等防抖，也不受点击守卫影响。
    */
   onDoubleClick(event) {
     const target = event.target;
@@ -2424,10 +2430,15 @@ var ReadingController = class {
     if (this.bar && this.bar.contains(target)) return;
     if (target.closest("a")) return;
     if (!this.plugin.settings.speakOnDoubleClick) return;
-    window.setTimeout(() => {
-      if (this.currentText.trim() === "") return;
-      void this.speak();
-    }, 0);
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0) return;
+    const word = selection.toString().trim();
+    if (!/^[A-Za-z][A-Za-z'\u2019-]*$/.test(word)) return;
+    this.prepareForNewTarget();
+    this.currentRange = selection.getRangeAt(0).cloneRange();
+    this.currentText = word;
+    this.showBar();
+    void this.speak();
   }
   selectSentence(index, span) {
     const scope = span.closest(`[${PARAGRAPH_ATTR}]`) ?? document;
@@ -2497,8 +2508,11 @@ var ReadingController = class {
     if (this.explainButton) this.explainButton.style.display = "none";
   }
   // ---------------- 拖选文本 ----------------
+  // selectionchange 在拖选过程中会连续触发很多次，所以要防抖：
+  // 每次都清掉上一个定时器，等停下来再读一次选区。
   scheduleSelectionCheck() {
-    window.setTimeout(() => this.handleSelection(), 0);
+    window.clearTimeout(this.selectionTimer);
+    this.selectionTimer = window.setTimeout(() => this.handleSelection(), 200);
   }
   /**
    * 把任意选中的文本作为朗读 / 跟读对象。
@@ -2507,7 +2521,7 @@ var ReadingController = class {
    * 以及标题、列表、表格这类不会被装饰成句子 span 的地方。
    */
   handleSelection() {
-    if (Date.now() - this.lastClickHandledAt < 150) return;
+    if (Date.now() - this.lastClickHandledAt < 300) return;
     const selection = window.getSelection();
     if (!selection || selection.isCollapsed || selection.rangeCount === 0) return;
     const text = selection.toString().trim();
@@ -2898,6 +2912,7 @@ var ReadingController = class {
 ${text}`);
   }
   dispose() {
+    window.clearTimeout(this.selectionTimer);
     this.stopContinuous();
     this.cancelRecording();
     this.forgetRecording();
@@ -3617,7 +3632,7 @@ ${ids.join("\n")}`;
   }
   async runWithDiagnostics(button, idleLabel, busyLabel, context, action) {
     this.diagnosticLines = [];
-    this.appendDiagnostic(`构建时间：${"2026-10-05T13:16:27.662Z"}`);
+    this.appendDiagnostic(`构建时间：${"2026-10-05T13:24:26.812Z"}`);
     this.appendDiagnostic(`时间：${(/* @__PURE__ */ new Date()).toLocaleString()}`);
     for (const line of context) this.appendDiagnostic(line);
     try {

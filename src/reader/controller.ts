@@ -50,11 +50,12 @@ export class ReadingController {
   /**
    * 最近一次由「点句」处理目标的时间。
    *
-   * mouseup 里排队的选区检查会在 click 之后才跑。触屏上点一句往往**不会**
+   * 选区检查是防抖触发的，仍可能排在 click 之后。触屏上点一句往往**不会**
    * 收起已有选区，于是那次延迟检查会把刚点中的句子又覆盖成旧选区。
    * 用时间戳挡住这个覆盖窗口。
    */
   private lastClickHandledAt = 0;
+  private selectionTimer?: number;
 
   private bar: HTMLElement | null = null;
   private statusEl: HTMLElement | null = null;
@@ -87,8 +88,17 @@ export class ReadingController {
 
     this.plugin.registerDomEvent(document, "click", (event) => this.onClick(event));
     // 拖选或键盘选择结束后，看是否有文本被选中
-    this.plugin.registerDomEvent(document, "mouseup", () => this.scheduleSelectionCheck());
-    this.plugin.registerDomEvent(document, "keyup", () => this.scheduleSelectionCheck());
+    // 选区变化的监听用 selectionchange，而不是 mouseup。
+    //
+    // 这是触屏上的关键：iOS 的 WKWebView 只为"点按"合成鼠标事件，
+    // **拖拽选择文字不会触发 mouseup**。只挂 mouseup 的话，
+    // 在 iPad 上拖选一段文字，选区检查永远不会跑，操作对象还停在上一次的目标上。
+    // selectionchange 在任何平台、任何选择方式（鼠标、触屏、键盘）下都会触发。
+    this.plugin.registerDomEvent(document, "selectionchange", () =>
+      this.scheduleSelectionCheck(),
+    );
+    // touchend 作为补充信号，覆盖 selectionchange 偶发不触发的边角情况
+    this.plugin.registerDomEvent(document, "touchend", () => this.scheduleSelectionCheck());
     this.plugin.registerDomEvent(document, "dblclick", (event) => this.onDoubleClick(event));
     // 滚动或改变窗口大小时让操作条跟着目标走（iPad 分屏会改变视口宽度）
     this.plugin.registerDomEvent(window, "scroll", () => this.scheduleReposition(), true);
@@ -175,8 +185,9 @@ export class ReadingController {
    * 与"拖选后手动点"的区别在于**意图**：双击是一个明确的手势 ——
    * "我想知道这个词怎么读"。而拖选经常只是为了复制，所以那里不自动发声。
    *
-   * 双击时浏览器会先选中该词，mouseup 处理器已经把操作对象设好了；
-   * 这里只负责补上"发声"这一步。
+   * 双击后浏览器会把那个词选中。操作对象必须是**那个词**，而不是它所在的整句 ——
+   * 双击的语义就是"我要知道这个词怎么读"。所以这里直接读选区，
+   * 既不等防抖，也不受点击守卫影响。
    */
   private onDoubleClick(event: MouseEvent): void {
     const target = event.target;
@@ -185,11 +196,17 @@ export class ReadingController {
     if (target.closest("a")) return;
     if (!this.plugin.settings.speakOnDoubleClick) return;
 
-    // 让 mouseup 里排队的选区处理先跑完，否则可能读的是上一个对象
-    window.setTimeout(() => {
-      if (this.currentText.trim() === "") return;
-      void this.speak();
-    }, 0);
+    // 只取单词：长句不当作"双击查词"
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0) return;
+    const word = selection.toString().trim();
+    if (!/^[A-Za-z][A-Za-z'\u2019-]*$/.test(word)) return;
+
+    this.prepareForNewTarget();
+    this.currentRange = selection.getRangeAt(0).cloneRange();
+    this.currentText = word;
+    this.showBar();
+    void this.speak();
   }
 
   private selectSentence(index: number, span: HTMLElement): void {
@@ -274,9 +291,11 @@ export class ReadingController {
 
   // ---------------- 拖选文本 ----------------
 
+  // selectionchange 在拖选过程中会连续触发很多次，所以要防抖：
+  // 每次都清掉上一个定时器，等停下来再读一次选区。
   private scheduleSelectionCheck(): void {
-    // 等浏览器先把 selection 更新完，再读它
-    window.setTimeout(() => this.handleSelection(), 0);
+    window.clearTimeout(this.selectionTimer);
+    this.selectionTimer = window.setTimeout(() => this.handleSelection(), 200);
   }
 
   /**
@@ -287,7 +306,7 @@ export class ReadingController {
    */
   private handleSelection(): void {
     // 刚由「点句」定过目标：这次的延迟选区检查作废，别把它覆盖回去
-    if (Date.now() - this.lastClickHandledAt < 150) return;
+    if (Date.now() - this.lastClickHandledAt < 300) return;
 
     const selection = window.getSelection();
     if (!selection || selection.isCollapsed || selection.rangeCount === 0) return;
@@ -780,6 +799,7 @@ export class ReadingController {
   }
 
   private dispose(): void {
+    window.clearTimeout(this.selectionTimer);
     this.stopContinuous();
     this.cancelRecording();
     this.forgetRecording();
